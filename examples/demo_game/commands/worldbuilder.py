@@ -50,17 +50,17 @@ class CmdWBLoad(BaseCommand):
 
         kwargs = {
             "repo": getattr(settings, "WORLDBUILDER_GITHUB_REPO", ""),
-            "path": getattr(settings, "WORLDBUILDER_GITHUB_PATH", ""),
             "ref": getattr(settings, "WORLDBUILDER_GITHUB_REF", ""),
             "pat": getattr(settings, "WORLDBUILDER_GITHUB_PAT", ""),
         }
+        path = getattr(settings, "WORLDBUILDER_GITHUB_PATH", "")
         missing = [
             name
             for name, value in (
                 ("WORLDBUILDER_GITHUB_PAT", kwargs["pat"]),
                 ("WORLDBUILDER_GITHUB_REPO", kwargs["repo"]),
                 ("WORLDBUILDER_GITHUB_REF", kwargs["ref"]),
-                ("WORLDBUILDER_GITHUB_PATH", kwargs["path"]),
+                ("WORLDBUILDER_GITHUB_PATH", path),
             )
             if not value
         ]
@@ -75,7 +75,7 @@ class CmdWBLoad(BaseCommand):
 
         try:
             reader = get_reader_class()(**kwargs)
-            result = reader.read()
+            result = reader.read(path)
         except ReaderAuthError:
             caller.msg("Spike: auth failed (401). Check PAT scope and expiry.")
             return
@@ -96,7 +96,7 @@ class CmdWBLoad(BaseCommand):
 
         caller.msg(
             f"Spike: fetched {len(result.raw_bytes)} bytes from "
-            f"{kwargs['repo']}@{kwargs['ref']}:{kwargs['path']}"
+            f"{kwargs['repo']}@{kwargs['ref']}:{path}"
         )
         caller.msg("--- raw ---")
         caller.msg(result.raw_bytes.decode("utf-8", errors="replace"))

@@ -2,8 +2,9 @@
 """Tests for world-builder.
 
 Verifies the package is importable, the Reader contract is honoured by
-GitHubReader against a mocked urllib, and settings-based dispatch
-resolves the configured reader correctly.
+GitHubReader against a mocked urllib, settings-based dispatch resolves
+correctly, and the manifest discovery + loading pipeline (Definitions,
+Finder, Loader) operates against synthetic in-memory fixtures.
 """
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,17 @@ from django.test import TestCase, override_settings
 
 import world_builder
 from world_builder import (
+    Definitions,
+    DefinitionsError,
+    Finder,
+    FinderManifestError,
+    FinderQueryError,
+    FoundLocation,
     GitHubReader,
+    LoadedEntity,
+    Loader,
+    LoaderMissingEntryError,
+    LoaderMissingIndexError,
     ReaderAuthError,
     ReaderNetworkError,
     ReaderNotFoundError,
@@ -26,8 +37,45 @@ class FakeReader:
     """Used by GetReaderClassTest to verify dispatch via @override_settings.
 
     Defined at module scope so it is importable as
-    ``world_builder.tests.FakeReader``.
+    ``world_builder.tests.FakeReader``. Distinct from FixtureReader below.
     """
+
+
+class FixtureReader:
+    """An in-memory Reader for tests of Finder and Loader.
+
+    Maps path → parsed-data; raises ReaderNotFoundError for unknown paths.
+    Built at module scope so individual tests can construct one inline
+    with a synthetic content tree.
+    """
+
+    def __init__(self, files: dict):
+        self.files = files
+
+    def read(self, path: str) -> ReaderResult:
+        if path not in self.files:
+            raise ReaderNotFoundError(f"FixtureReader: path {path!r} not in fixtures")
+        data = self.files[path]
+        return ReaderResult(raw_bytes=repr(data).encode(), parsed=data)
+
+
+# Synthetic manifest used by both Finder and Loader tests. Mirrors the
+# scaffolded layout in world-builder-test-yaml so behaviour is the same
+# in unit tests and against the live private repo.
+SCAFFOLD = {
+    "definitions.yaml": {"levels": ["zone", "room"]},
+    "index.yaml": {"entries": [
+        {"name": "millholm", "kind": "folder"},
+        {"name": "aethenveil", "kind": "file"},
+    ]},
+    "millholm/index.yaml": {"entries": [
+        {"name": "inn", "kind": "file"},
+        {"name": "bakery", "kind": "file"},
+    ]},
+    "aethenveil.yaml": {"name": "Sanctum", "description": "A circular chamber."},
+    "millholm/inn.yaml": {"name": "The Crooked Lantern", "description": "Warmly lit."},
+    "millholm/bakery.yaml": {"name": "Goldencrust", "description": "Smells of bread."},
+}
 
 
 class SmokeTest(TestCase):
@@ -45,10 +93,10 @@ class GitHubReaderTest(TestCase):
 
     KWARGS = {
         "repo": "owner/repo",
-        "path": "file.yaml",
         "ref": "main",
         "pat": "ghp_test",
     }
+    PATH = "file.yaml"
 
     def _response_with_payload(self, payload: bytes) -> MagicMock:
         """Build a context-manager-protocol-supporting mock for urlopen()."""
@@ -58,13 +106,13 @@ class GitHubReaderTest(TestCase):
 
     def test_required_kwargs_declared(self):
         self.assertEqual(
-            GitHubReader.required_kwargs, ("repo", "path", "ref", "pat")
+            GitHubReader.required_kwargs, ("repo", "ref", "pat")
         )
 
     @patch("world_builder.readers.github.urllib.request.urlopen")
     def test_happy_path_returns_raw_and_parsed(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b"key: value\n")
-        result = GitHubReader(**self.KWARGS).read()
+        result = GitHubReader(**self.KWARGS).read(self.PATH)
         self.assertIsInstance(result, ReaderResult)
         self.assertEqual(result.raw_bytes, b"key: value\n")
         self.assertEqual(result.parsed, {"key": "value"})
@@ -72,7 +120,7 @@ class GitHubReaderTest(TestCase):
     @patch("world_builder.readers.github.urllib.request.urlopen")
     def test_request_url_and_headers(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b"x: 1\n")
-        GitHubReader(**self.KWARGS).read()
+        GitHubReader(**self.KWARGS).read(self.PATH)
         request = mock_urlopen.call_args[0][0]
         self.assertIn("/repos/owner/repo/contents/file.yaml", request.full_url)
         self.assertIn("ref=main", request.full_url)
@@ -90,7 +138,7 @@ class GitHubReaderTest(TestCase):
             "url", 401, "Unauthorized", {}, None
         )
         with self.assertRaises(ReaderAuthError):
-            GitHubReader(**self.KWARGS).read()
+            GitHubReader(**self.KWARGS).read(self.PATH)
 
     @patch("world_builder.readers.github.urllib.request.urlopen")
     def test_404_raises_not_found_error(self, mock_urlopen):
@@ -98,19 +146,19 @@ class GitHubReaderTest(TestCase):
             "url", 404, "Not Found", {}, None
         )
         with self.assertRaises(ReaderNotFoundError):
-            GitHubReader(**self.KWARGS).read()
+            GitHubReader(**self.KWARGS).read(self.PATH)
 
     @patch("world_builder.readers.github.urllib.request.urlopen")
     def test_url_error_raises_network_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.URLError("nodename nor servname")
         with self.assertRaises(ReaderNetworkError):
-            GitHubReader(**self.KWARGS).read()
+            GitHubReader(**self.KWARGS).read(self.PATH)
 
     @patch("world_builder.readers.github.urllib.request.urlopen")
     def test_bad_yaml_raises_parse_error(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b":::not yaml\n: : :")
         with self.assertRaises(ReaderParseError):
-            GitHubReader(**self.KWARGS).read()
+            GitHubReader(**self.KWARGS).read(self.PATH)
 
 
 class GetReaderClassTest(TestCase):
@@ -127,3 +175,172 @@ class GetReaderClassTest(TestCase):
     def test_bad_dotted_path_raises(self):
         with self.assertRaises((ImportError, AttributeError)):
             get_reader_class()
+
+
+class DefinitionsTest(TestCase):
+    """Verify Definitions parsing."""
+
+    def test_default_empty_levels(self):
+        self.assertEqual(Definitions().levels, ())
+
+    def test_from_dict_with_levels(self):
+        d = Definitions.from_dict({"levels": ["zone", "room"]})
+        self.assertEqual(d.levels, ("zone", "room"))
+
+    def test_from_dict_with_none(self):
+        self.assertEqual(Definitions.from_dict(None).levels, ())
+
+    def test_from_dict_with_no_levels_key(self):
+        self.assertEqual(Definitions.from_dict({}).levels, ())
+
+    def test_from_dict_levels_must_be_list(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions.from_dict({"levels": "zone,room"})
+
+    def test_from_dict_levels_entries_must_be_strings(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions.from_dict({"levels": ["zone", 42]})
+
+    def test_from_dict_must_be_mapping(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions.from_dict("not a dict")
+
+    def test_from_reader(self):
+        reader = FixtureReader({"definitions.yaml": {"levels": ["zone", "room"]}})
+        d = Definitions.from_reader(reader)
+        self.assertEqual(d.levels, ("zone", "room"))
+
+
+class FinderTest(TestCase):
+    """Verify Finder.find() against a synthetic manifest tree."""
+
+    def _make_finder(self):
+        reader = FixtureReader(SCAFFOLD)
+        defs = Definitions.from_reader(reader)
+        return Finder(reader, defs)
+
+    def test_empty_query_returns_root(self):
+        found = self._make_finder().find()
+        self.assertEqual(found.path, "")
+        self.assertEqual(found.kind, "folder")
+        self.assertEqual(found.location, {})
+
+    def test_zone_folder_query_returns_folder_location(self):
+        found = self._make_finder().find({"zone": "millholm"})
+        self.assertEqual(found.path, "millholm")
+        self.assertEqual(found.kind, "folder")
+        self.assertEqual(found.location, {"zone": "millholm"})
+
+    def test_zone_file_query_returns_file_location(self):
+        found = self._make_finder().find({"zone": "aethenveil"})
+        self.assertEqual(found.path, "aethenveil.yaml")
+        self.assertEqual(found.kind, "file")
+        self.assertEqual(found.location, {"zone": "aethenveil"})
+
+    def test_full_path_query(self):
+        found = self._make_finder().find({"zone": "millholm", "room": "bakery"})
+        self.assertEqual(found.path, "millholm/bakery.yaml")
+        self.assertEqual(found.kind, "file")
+        self.assertEqual(found.location, {"zone": "millholm", "room": "bakery"})
+
+    def test_invalid_key_raises(self):
+        with self.assertRaises(FinderQueryError):
+            self._make_finder().find({"area": "town"})
+
+    def test_skipped_level_raises(self):
+        # levels=[zone, room]; can't query just {room: X}
+        with self.assertRaises(FinderQueryError):
+            self._make_finder().find({"room": "inn"})
+
+    def test_value_not_in_index_raises(self):
+        with self.assertRaises(FinderQueryError):
+            self._make_finder().find({"zone": "nonexistent"})
+
+    def test_room_not_in_zone_raises(self):
+        with self.assertRaises(FinderQueryError):
+            self._make_finder().find({"zone": "millholm", "room": "nonexistent"})
+
+    def test_missing_index_raises_manifest_error(self):
+        scaffold = {
+            "definitions.yaml": {"levels": ["zone"]},
+            # no index.yaml at root
+        }
+        reader = FixtureReader(scaffold)
+        defs = Definitions.from_reader(reader)
+        finder = Finder(reader, defs)
+        with self.assertRaises(FinderManifestError):
+            finder.find({"zone": "x"})
+
+
+class LoaderTest(TestCase):
+    """Verify Loader.load() recursive walk against synthetic fixtures."""
+
+    def _make(self):
+        reader = FixtureReader(SCAFFOLD)
+        defs = Definitions.from_reader(reader)
+        return Finder(reader, defs), Loader(reader, defs)
+
+    def test_load_root_returns_all_in_index_order(self):
+        finder, loader = self._make()
+        entities = loader.load(finder.find())
+        # Index order: millholm (folder, recurses into inn, bakery), then aethenveil
+        self.assertEqual(len(entities), 3)
+        self.assertEqual(entities[0].location, {"zone": "millholm", "room": "inn"})
+        self.assertEqual(entities[0].path, "millholm/inn.yaml")
+        self.assertEqual(entities[1].location, {"zone": "millholm", "room": "bakery"})
+        self.assertEqual(entities[1].path, "millholm/bakery.yaml")
+        self.assertEqual(entities[2].location, {"zone": "aethenveil"})
+        self.assertEqual(entities[2].path, "aethenveil.yaml")
+
+    def test_load_zone_folder_returns_subtree(self):
+        finder, loader = self._make()
+        entities = loader.load(finder.find({"zone": "millholm"}))
+        self.assertEqual(len(entities), 2)
+        self.assertEqual(entities[0].path, "millholm/inn.yaml")
+        self.assertEqual(entities[1].path, "millholm/bakery.yaml")
+
+    def test_load_zone_file_returns_single(self):
+        finder, loader = self._make()
+        entities = loader.load(finder.find({"zone": "aethenveil"}))
+        self.assertEqual(len(entities), 1)
+        self.assertEqual(entities[0].path, "aethenveil.yaml")
+        self.assertEqual(entities[0].location, {"zone": "aethenveil"})
+
+    def test_load_specific_room(self):
+        finder, loader = self._make()
+        entities = loader.load(finder.find({"zone": "millholm", "room": "bakery"}))
+        self.assertEqual(len(entities), 1)
+        self.assertEqual(entities[0].path, "millholm/bakery.yaml")
+        self.assertEqual(entities[0].location, {"zone": "millholm", "room": "bakery"})
+
+    def test_loaded_entity_carries_content(self):
+        finder, loader = self._make()
+        entities = loader.load(finder.find({"zone": "millholm", "room": "inn"}))
+        self.assertEqual(entities[0].content, {
+            "name": "The Crooked Lantern",
+            "description": "Warmly lit.",
+        })
+
+    def test_index_pointing_at_missing_file_raises(self):
+        scaffold = {
+            "definitions.yaml": {"levels": ["zone"]},
+            "index.yaml": {"entries": [{"name": "ghost", "kind": "file"}]},
+            # no ghost.yaml
+        }
+        reader = FixtureReader(scaffold)
+        defs = Definitions.from_reader(reader)
+        loader = Loader(reader, defs)
+        with self.assertRaises(LoaderMissingEntryError):
+            loader.load(FoundLocation(path="", kind="folder", location={}))
+
+    def test_folder_missing_index_raises(self):
+        scaffold = {
+            "definitions.yaml": {"levels": ["zone", "room"]},
+            "index.yaml": {"entries": [{"name": "ghost", "kind": "folder"}]},
+            # no ghost/index.yaml
+        }
+        reader = FixtureReader(scaffold)
+        defs = Definitions.from_reader(reader)
+        loader = Loader(reader, defs)
+        with self.assertRaises(LoaderMissingIndexError):
+            loader.load(FoundLocation(path="", kind="folder", location={}))

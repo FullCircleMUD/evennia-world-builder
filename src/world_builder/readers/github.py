@@ -29,9 +29,10 @@ class GitHubReader(Reader):
 
     Construction kwargs (all required, all keyword-only):
         repo: owner/name slug (e.g. ``"FullCircleMUD/world-builder-test-yaml"``).
-        path: path within the repo (e.g. ``"hello.yaml"``).
         ref:  branch, tag, or commit SHA.
         pat:  GitHub Personal Access Token with read access to the repo.
+
+    The path within the repo is supplied per-read via ``read(path)``.
 
     Raises (from read()):
         ReaderAuthError:     HTTP 401 — PAT rejected.
@@ -40,18 +41,17 @@ class GitHubReader(Reader):
         ReaderParseError:    YAML or UTF-8 decode failure.
     """
 
-    required_kwargs = ("repo", "path", "ref", "pat")
+    required_kwargs = ("repo", "ref", "pat")
 
-    def __init__(self, *, repo, path, ref, pat):
+    def __init__(self, *, repo, ref, pat):
         self.repo = repo
-        self.path = path
         self.ref = ref
         self.pat = pat
 
-    def read(self) -> ReaderResult:
+    def read(self, path: str) -> ReaderResult:
         url = (
             f"https://api.github.com/repos/{self.repo}"
-            f"/contents/{self.path}?ref={self.ref}"
+            f"/contents/{path}?ref={self.ref}"
         )
         request = urllib.request.Request(
             url,
@@ -70,11 +70,11 @@ class GitHubReader(Reader):
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 raise ReaderAuthError(
-                    f"GitHub auth failed (401) for {self.repo}@{self.ref}:{self.path}"
+                    f"GitHub auth failed (401) for {self.repo}@{self.ref}:{path}"
                 ) from e
             if e.code == 404:
                 raise ReaderNotFoundError(
-                    f"Not found (404) for {self.repo}@{self.ref}:{self.path}"
+                    f"Not found (404) for {self.repo}@{self.ref}:{path}"
                 ) from e
             raise ReaderNetworkError(f"HTTP {e.code}: {e.reason}") from e
         except urllib.error.URLError as e:

@@ -11,6 +11,7 @@ Map of all design documents in this directory, organised by category. Add new do
 
 - **[spike-1-load-from-github.md](spike-1-load-from-github.md)** — first PoC: validate that an Evennia superuser command can fetch and parse YAML from a private GitHub repo. Establishes the auth/fetch foundation for all subsequent spikes.
 - **[reader-api.md](reader-api.md)** — the library's Reader contract: settings-based dispatch, GitHubReader as first concrete implementation, typed exceptions, `required_kwargs` for discoverability. Settles spike 1's "library/consumer fetch boundary" question.
+- **[discovery-and-loading.md](discovery-and-loading.md)** — Finder and Loader: how the library navigates a content repo's manifest tree (definitions.yaml + per-folder index.yaml) and assembles all matching content for downstream processing. Settles spike 1's deferred "indexing convention" question.
 
 ## Archive
 

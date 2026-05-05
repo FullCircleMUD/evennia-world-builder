@@ -20,3 +20,31 @@ class ReaderNetworkError(ReaderError):
 
 class ReaderParseError(ReaderError):
     """Source content fetched but could not be parsed (YAML or UTF-8 decode failure)."""
+
+
+class DefinitionsError(Exception):
+    """Raised when definitions.yaml is malformed or violates the schema."""
+
+
+class FinderError(Exception):
+    """Base class for Finder failures."""
+
+
+class FinderManifestError(FinderError):
+    """An index.yaml is malformed or missing where the Finder expected it."""
+
+
+class FinderQueryError(FinderError):
+    """Operator query is invalid: key not in levels, levels skipped, or value not found at level."""
+
+
+class LoaderError(Exception):
+    """Base class for Loader failures."""
+
+
+class LoaderMissingIndexError(LoaderError):
+    """A folder lacks the required index.yaml."""
+
+
+class LoaderMissingEntryError(LoaderError):
+    """An index references a file or folder that does not exist at the source."""

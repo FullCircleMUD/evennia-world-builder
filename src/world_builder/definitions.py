@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: BSD-3-Clause
+"""Definitions — parsed contents of a content repo's definitions.yaml.
+
+The library reads definitions.yaml once per command invocation; the parsed
+Definitions object is then handed to the Finder, Loader, and any other
+consumer of the manifest convention. As more declarations land in
+definitions.yaml over time, they become typed fields on this class.
+"""
+from dataclasses import dataclass
+
+from .errors import DefinitionsError
+from .readers.base import Reader
+
+
+_DEFINITIONS_PATH = "definitions.yaml"
+
+
+@dataclass(frozen=True)
+class Definitions:
+    """Parsed contents of definitions.yaml.
+
+    Attributes:
+        levels: Hierarchical level names declared by the consumer, in order.
+                Empty tuple () is valid and means a flat world (only an
+                empty query is meaningful — `find()` returns root, Loader
+                walks everything from there).
+    """
+
+    levels: tuple = ()
+
+    @classmethod
+    def from_reader(cls, reader: Reader, path: str = _DEFINITIONS_PATH) -> "Definitions":
+        """Read and parse definitions.yaml using the supplied Reader."""
+        result = reader.read(path)
+        return cls.from_dict(result.parsed, source_path=path)
+
+    @classmethod
+    def from_dict(cls, data, *, source_path: str = "<dict>") -> "Definitions":
+        """Construct from a parsed dict (useful for tests).
+
+        Raises DefinitionsError if the data is malformed.
+        """
+        if data is None:
+            return cls(levels=())
+        if not isinstance(data, dict):
+            raise DefinitionsError(
+                f"{source_path}: expected a mapping, got {type(data).__name__}"
+            )
+        levels = data.get("levels", [])
+        if not isinstance(levels, list):
+            raise DefinitionsError(
+                f"{source_path}: 'levels' must be a list, got {type(levels).__name__}"
+            )
+        for level in levels:
+            if not isinstance(level, str):
+                raise DefinitionsError(
+                    f"{source_path}: 'levels' entries must be strings; got {level!r}"
+                )
+        return cls(levels=tuple(levels))
