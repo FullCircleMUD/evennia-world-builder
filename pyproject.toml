@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "world-builder"
+version = "0.0.1"
+description = "Declarative YAML-driven world authoring for Evennia"
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+authors = [{name = "Tim Baird"}]
+requires-python = ">=3.10"
+dependencies = [
+    "evennia",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["world_builder*"]

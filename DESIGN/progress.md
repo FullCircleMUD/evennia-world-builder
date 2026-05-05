@@ -1,0 +1,15 @@
+# Progress
+
+Running log of milestones with links to evidence. Reverse chronological — newest first.
+
+## 2026-05-05
+
+- Library verified installable end-to-end: dedicated venv at `world-builder/venv/`, `pip install -e .` succeeds, `python runtests.py` reports 2 smoke tests passing (`test_package_importable`, `test_version_is_string`).
+- Scaffolding completed per [LIBRARY_STANDARDS.md](../../LIBRARY_STANDARDS.md): src/ layout adopted; `pyproject.toml` populated; `src/world_builder/` with `__init__.py` and smoke tests; `tests/` with `test_settings.py` and `urls.py`; `runtests.py` wired to Django test runner. CLAUDE.md Repository layout and Tools-and-environment sections updated to reflect the scaffolded reality.
+- Family-level library standards captured: [LIBRARY_STANDARDS.md](../../LIBRARY_STANDARDS.md) created at `FCM/libraries/` codifying conventions shared by evennia-shards and world-builder (naming, layout, pyproject.toml shape, license, test framework, documentation surfaces, bootstrap checklist).
+- Repo bootstrapped on GitHub and cloned to `FCM/libraries/world-builder/`.
+- Documentation seeded from evennia-shards templates: [CLAUDE.md](../CLAUDE.md), [LICENSE](../LICENSE) (BSD 3-Clause), [DESIGN/documentation-structure.md](documentation-structure.md), this file, [README.md](../README.md), [DESIGN/INDEX.md](INDEX.md).
+- CLAUDE.md adapted to world-builder: load-bearing principles drawn from the [archived brainstorm](archive/WorldAsDataNotes.md); out-of-scope deferred to "decided as questions arise" rather than pre-baked.
+- Initial scaffolding files added (placeholders, no content yet): `pyproject.toml`, `runtests.py`, `examples/`, `world-builder/` package directory.
+- Prior-art research conducted — see [archive/evennia-prior-art-survey.md](archive/evennia-prior-art-survey.md) and [archive/existing-yaml-system-survey.md](archive/existing-yaml-system-survey.md).
+- Design substrate archived: [archive/WorldAsDataNotes.md](archive/WorldAsDataNotes.md), the original brainstorm captured during FCM-side discussions that led to creating this library.
