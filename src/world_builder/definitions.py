@@ -57,3 +57,32 @@ class Definitions:
                     f"{source_path}: 'levels' entries must be strings; got {level!r}"
                 )
         return cls(levels=tuple(levels))
+
+    def validate_query(self, query: dict) -> None:
+        """Validate a query against the declared levels.
+
+        A query is valid if:
+
+        - Every key is a declared level (value of self.levels).
+        - The keys present form a contiguous prefix of self.levels (skipping
+          intermediate levels is not allowed).
+
+        Raises DefinitionsError on any violation. Returns None on success.
+        """
+        for key in query:
+            if key not in self.levels:
+                raise DefinitionsError(
+                    f"Query key {key!r} is not a declared level "
+                    f"(declared: {list(self.levels)})"
+                )
+
+        seen_missing = False
+        for level in self.levels:
+            if level not in query:
+                seen_missing = True
+            elif seen_missing:
+                raise DefinitionsError(
+                    f"Query must form a contiguous prefix of levels "
+                    f"{list(self.levels)}; got {dict(query)} "
+                    f"(cannot skip an intermediate level)"
+                )

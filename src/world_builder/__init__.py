@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """world-builder — declarative YAML-driven world authoring for Evennia."""
 
-from .config import get_reader_class
+from .config import get_configured_reader, get_reader_class
 from .definitions import Definitions
 from .errors import (
     DefinitionsError,
@@ -34,6 +34,7 @@ __all__ = [
     "ReaderNetworkError",
     "ReaderParseError",
     "get_reader_class",
+    "get_configured_reader",
     "Definitions",
     "DefinitionsError",
     "Finder",

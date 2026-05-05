@@ -58,23 +58,11 @@ class Finder:
         query = dict(query or {})
         levels = self.definitions.levels
 
-        # Validate query keys are declared
-        for key in query:
-            if key not in levels:
-                raise FinderQueryError(
-                    f"Query key {key!r} is not in declared levels {list(levels)}"
-                )
-
-        # Validate query forms a contiguous prefix (no skipping)
-        seen_missing = False
-        for level in levels:
-            if level not in query:
-                seen_missing = True
-            elif seen_missing:
-                raise FinderQueryError(
-                    f"Query must form a contiguous prefix of levels {list(levels)}; "
-                    f"got {query} (cannot skip an intermediate level)"
-                )
+        # Validate query keys form a valid prefix of declared levels.
+        # Definitions owns this check (no manifest access needed); Finder
+        # does walk-time validation (FinderQueryError for values not found
+        # at the matching level in the manifest).
+        self.definitions.validate_query(query)
 
         # Walk
         location: dict = {}

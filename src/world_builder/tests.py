@@ -88,6 +88,20 @@ class SmokeTest(TestCase):
         self.assertIsInstance(world_builder.__version__, str)
 
 
+class CmdWBBuildSmokeTest(TestCase):
+    """Smoke check that the library-shipped admin command is importable
+    and has the expected metadata. Auto-installation into CharacterCmdSet
+    is exercised by live smoke testing in the demo gamedir."""
+
+    def test_command_importable(self):
+        from world_builder.commands import CmdWBBuild
+
+        self.assertEqual(CmdWBBuild.key, "wb_build")
+        self.assertEqual(CmdWBBuild.locks, "cmd:superuser()")
+        # Evennia normalises help_category to lowercase.
+        self.assertEqual(CmdWBBuild.help_category.lower(), "world builder")
+
+
 class GitHubReaderTest(TestCase):
     """Verify GitHubReader.read() against a mocked urllib."""
 
@@ -210,6 +224,81 @@ class DefinitionsTest(TestCase):
         d = Definitions.from_reader(reader)
         self.assertEqual(d.levels, ("zone", "room"))
 
+    def test_validate_query_empty_is_valid(self):
+        Definitions(levels=("zone", "room")).validate_query({})
+
+    def test_validate_query_full_prefix_is_valid(self):
+        Definitions(levels=("zone", "room")).validate_query(
+            {"zone": "x", "room": "y"}
+        )
+
+    def test_validate_query_partial_prefix_is_valid(self):
+        Definitions(levels=("zone", "room")).validate_query({"zone": "x"})
+
+    def test_validate_query_unknown_key_raises(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions(levels=("zone", "room")).validate_query({"area": "x"})
+
+    def test_validate_query_skipped_level_raises(self):
+        # levels=[zone, area, room]; can't query {zone, room} (area skipped)
+        with self.assertRaises(DefinitionsError):
+            Definitions(levels=("zone", "area", "room")).validate_query(
+                {"zone": "x", "room": "y"}
+            )
+
+    def test_validate_query_against_empty_levels_rejects_any_keys(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions(levels=()).validate_query({"zone": "x"})
+
+
+class ParseKvArgsTest(TestCase):
+    """Verify the wb_build argument parser helper."""
+
+    def test_empty_input_returns_empty_dict(self):
+        from world_builder.commands import _parse_kv_args
+
+        self.assertEqual(_parse_kv_args(""), {})
+        self.assertEqual(_parse_kv_args("   "), {})
+
+    def test_single_pair(self):
+        from world_builder.commands import _parse_kv_args
+
+        self.assertEqual(_parse_kv_args("zone=millholm"), {"zone": "millholm"})
+
+    def test_multiple_pairs(self):
+        from world_builder.commands import _parse_kv_args
+
+        self.assertEqual(
+            _parse_kv_args("zone=millholm room=bakery"),
+            {"zone": "millholm", "room": "bakery"},
+        )
+
+    def test_extra_whitespace_tolerated(self):
+        from world_builder.commands import _parse_kv_args
+
+        self.assertEqual(
+            _parse_kv_args("  zone=millholm   room=bakery  "),
+            {"zone": "millholm", "room": "bakery"},
+        )
+
+    def test_token_without_equals_raises(self):
+        from world_builder.commands import _parse_kv_args
+
+        with self.assertRaises(ValueError):
+            _parse_kv_args("zone")
+
+    def test_empty_value_raises(self):
+        from world_builder.commands import _parse_kv_args
+
+        with self.assertRaises(ValueError):
+            _parse_kv_args("zone=")
+
+    def test_empty_key_raises(self):
+        from world_builder.commands import _parse_kv_args
+
+        with self.assertRaises(ValueError):
+            _parse_kv_args("=millholm")
+
 
 class FinderTest(TestCase):
     """Verify Finder.find() against a synthetic manifest tree."""
@@ -244,12 +333,14 @@ class FinderTest(TestCase):
         self.assertEqual(found.location, {"zone": "millholm", "room": "bakery"})
 
     def test_invalid_key_raises(self):
-        with self.assertRaises(FinderQueryError):
+        # Keys-not-in-levels is now DefinitionsError (Definitions owns the
+        # query-shape validation; Finder only validates manifest content).
+        with self.assertRaises(DefinitionsError):
             self._make_finder().find({"area": "town"})
 
     def test_skipped_level_raises(self):
         # levels=[zone, room]; can't query just {room: X}
-        with self.assertRaises(FinderQueryError):
+        with self.assertRaises(DefinitionsError):
             self._make_finder().find({"room": "inn"})
 
     def test_value_not_in_index_raises(self):

@@ -28,3 +28,20 @@ def get_reader_class():
     module_path, _, attr_name = dotted.rpartition(".")
     module = importlib.import_module(module_path)
     return getattr(module, attr_name)
+
+
+def get_configured_reader():
+    """Resolve the reader class and instantiate it with WORLDBUILDER_READER_KWARGS.
+
+    The consumer supplies reader-specific kwargs as a single dict-shaped
+    setting (``WORLDBUILDER_READER_KWARGS``). The library forwards them to
+    the resolved reader class without inspecting their contents — kwargs
+    are reader-specific and the library does not dictate their shape.
+
+    Raises:
+        Whatever the resolved reader class's __init__ raises if kwargs
+        don't match. Unset / empty kwargs setting is treated as ``{}``.
+    """
+    reader_class = get_reader_class()
+    kwargs = getattr(settings, "WORLDBUILDER_READER_KWARGS", {}) or {}
+    return reader_class(**kwargs)

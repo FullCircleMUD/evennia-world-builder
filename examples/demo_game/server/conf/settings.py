@@ -38,6 +38,14 @@ SERVERNAME = "demo_game"
 
 
 ######################################################################
+# world-builder library — INSTALLED_APPS registration so the library's
+# AppConfig.ready() fires and auto-installs library-shipped commands
+# (e.g. wb_build) into CharacterCmdSet.
+######################################################################
+INSTALLED_APPS = list(INSTALLED_APPS) + ["world_builder"]
+
+
+######################################################################
 # world-builder spike 1
 ######################################################################
 # GitHub repo to fetch YAML from for the wbload spike command. PAT must
@@ -68,3 +76,16 @@ try:
     from server.conf.secret_settings import *
 except ImportError:
     print("secret_settings.py file not found or failed to import.")
+
+
+######################################################################
+# Reader kwargs for the world-builder library.
+######################################################################
+# Built AFTER secret_settings import so PAT override (in secret_settings.py)
+# is reflected. This is what wb_build (and any other library command using
+# get_configured_reader()) reads to construct the configured Reader.
+WORLDBUILDER_READER_KWARGS = {
+    "repo": WORLDBUILDER_GITHUB_REPO,
+    "ref": WORLDBUILDER_GITHUB_REF,
+    "pat": WORLDBUILDER_GITHUB_PAT,
+}
