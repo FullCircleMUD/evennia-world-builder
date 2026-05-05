@@ -48,3 +48,15 @@ class LoaderMissingIndexError(LoaderError):
 
 class LoaderMissingEntryError(LoaderError):
     """An index references a file or folder that does not exist at the source."""
+
+
+class ValidatorError(Exception):
+    """Base class for Validator failures.
+
+    v0 has no concrete subtypes — Validator is a no-op placeholder until
+    specific validation needs emerge from Builder work.
+    """
+
+
+class BuilderError(Exception):
+    """Base class for Builder failures."""

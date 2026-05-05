@@ -27,7 +27,7 @@ world-builder ships admin commands that auto-install into any consumer game that
 
 ### `wb_build`
 
-Build world content from the configured manifest source. Drives the full discovery + loading pipeline (`Definitions → Finder → Loader`); the Validator and Builder phases are not yet implemented.
+Build world content from the configured manifest source. Drives the full pipeline: `Definitions → Finder → Loader → Validator → Builder`. On a clean validator pass the Builder runs and creates Evennia objects (currently minimum-viable: one object per entity, see [deployment-identity.md](deployment-identity.md) for the identity contract). On any validation finding the command surfaces every message via `caller.msg()` and refuses to call the Builder — same complete-refusal semantics as the standalone CLI.
 
 **Usage:**
 
@@ -45,10 +45,13 @@ Build world content from the configured manifest source. Drives the full discove
 - Query key not in declared levels, or skips a level → `DefinitionsError` (caught at validation, before any walk).
 - Query value not found in the manifest → `FinderQueryError` (caught during the walk).
 - Index missing in a folder, or pointing at a non-existent file → `LoaderError` subtype.
+- Validator findings (e.g. missing or duplicate `deployment_id`) → all messages echoed, then `wb_build` refuses without invoking the Builder.
 
-For the iterative-build phases this command currently echoes the pipeline stages and dumps the loaded entities for visual verification. The output shape is a debugging aid; not part of any contract.
+The command currently echoes pipeline stages and dumps loaded entities for visual verification. The output shape is a debugging aid; not part of any contract.
 
 ## See also
 
 - [discovery-and-loading.md](discovery-and-loading.md) — the underlying Finder + Loader pipeline.
 - [reader-api.md](reader-api.md) — the Reader contract and dispatch via `WORLDBUILDER_READER`.
+- [validator.md](validator.md) — the checks that run before the Builder is invoked.
+- [cli.md](cli.md) — the standalone `wb-validate` counterpart that runs the same pipeline outside Evennia.

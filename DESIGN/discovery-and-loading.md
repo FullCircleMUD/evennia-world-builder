@@ -187,7 +187,6 @@ aethenveil.yaml
 
 ## Out of scope (deferred)
 
-- **Multi-entity files** — a single file containing multiple entities with their own ids. v0 is one entity per file. Defer until a real use case lands.
 - **Cross-cutting tags** beyond the hierarchy (e.g. `tier: starter`). Defer; levels alone cover the build-scope case.
 - **Multi-value queries** (`zone=A OR zone=B`). Defer; single value per level is enough for v0.
 - **Caching the manifest** across commands. On-demand re-read per command, matching the Reader pattern.

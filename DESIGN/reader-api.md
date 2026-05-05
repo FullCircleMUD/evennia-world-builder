@@ -1,6 +1,15 @@
 # Reader API
 
-The library's first contract: a `Reader` is a configured connection to a content source (a GitHub repo, an S3 bucket, a filesystem root). Construction kwargs are reader-specific (auth, source identity); `path` is supplied per-read as the query against that source. `read(path)` returns a `ReaderResult` with the raw bytes and parsed YAML. Concrete subclasses determine the source. The library ships `GitHubReader` as the first implementation; future readers plug in via the `WORLDBUILDER_READER` setting.
+The library's first contract: a `Reader` is a configured connection to a content source (a GitHub repo, an S3 bucket, a filesystem root). Construction kwargs are reader-specific (auth, source identity); `path` is supplied per-read as the query against that source. `read(path)` returns a `ReaderResult` with the raw bytes and parsed YAML. Concrete subclasses determine the source. Future readers plug in via the `WORLDBUILDER_READER` setting without library changes.
+
+## Shipped readers
+
+| Class | Source | Construction kwargs | Use case |
+|---|---|---|---|
+| `GitHubReader` | GitHub Contents API | `repo`, `ref`, `pat` | Production / canonical content fetch |
+| `LocalReader` | Local filesystem tree | `root` | Dev iteration, CI/pre-commit, standalone `wb-validate` |
+
+Both use the same downstream pipeline. A developer iterates locally with `LocalReader` against a checkout; the same content goes through `GitHubReader` once committed. No code path changes — only the configured reader.
 
 ## Decisions
 
@@ -23,4 +32,8 @@ The spike's "library/consumer boundary for fetch+auth" is now resolved:
 
 ## Test approach
 
-Unit tests in `src/world_builder/tests.py` mock `urllib.request.urlopen` via `unittest.mock.patch`. No new test dependencies. The `GitHubReaderTest` suite covers the happy path (raw + parsed return, URL/header construction), the four error paths (401, 404, network, bad YAML), and the `required_kwargs` declaration. `GetReaderClassTest` covers the dispatch (default returns `GitHubReader`; `@override_settings` returns custom; bad dotted path raises).
+Unit tests in `src/world_builder/tests.py`:
+
+- `GitHubReaderTest` — mocks `urllib.request.urlopen` via `unittest.mock.patch`. Covers happy path (raw + parsed return, URL/header construction), four error paths (401, 404, network, bad YAML), and `required_kwargs` declaration.
+- `LocalReaderTest` — uses `tempfile.TemporaryDirectory` for real-filesystem fixtures. Covers happy path (single + nested paths), missing-file + bad-YAML error paths, path-traversal guard (escape attempts via `..` resolve outside `root` and are rejected as not-found), and string-vs-Path root acceptance.
+- `GetReaderClassTest` — covers dispatch (default returns `GitHubReader`; `@override_settings` returns custom; bad dotted path raises).

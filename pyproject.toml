@@ -15,6 +15,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.scripts]
+wb-validate = "world_builder.cli:_validate_main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["world_builder*"]

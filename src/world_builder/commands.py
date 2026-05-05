@@ -17,18 +17,22 @@ import pprint
 
 from evennia.commands.command import Command as BaseCommand
 
+from .builder import Builder
 from .config import get_configured_reader
 from .definitions import Definitions
 from .errors import (
+    BuilderError,
     DefinitionsError,
     FinderManifestError,
     FinderQueryError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
     ReaderError,
+    ValidatorError,
 )
 from .finder import Finder
 from .loader import Loader
+from .validator import Validator
 
 
 def _parse_kv_args(args_str: str) -> dict:
@@ -174,3 +178,33 @@ class CmdWBBuild(BaseCommand):
                 f"  [{i}] {entity.path} — location={entity.location}"
             )
             caller.msg(f"      content: {pprint.pformat(entity.content)}")
+
+        # Validator — runs every check, gathers all findings into
+        # validator.messages, then raises ValidatorError if any of them
+        # were errors (per the "complete refusal, no partial apply"
+        # principle). On error we still surface every finding before
+        # halting so the operator sees the full list in one run.
+        validator = Validator(definitions)
+        try:
+            validated = validator.validate(entities)
+        except ValidatorError as e:
+            for msg in validator.messages:
+                caller.msg(msg)
+            caller.msg(f"wb_build: refusing to build — {e}")
+            return
+        for msg in validator.messages:
+            caller.msg(msg)
+
+        # Builder — minimum viable: one Evennia object per entity.
+        builder = Builder(definitions)
+        try:
+            created = builder.build(validated)
+        except BuilderError as e:
+            caller.msg(f"wb_build: build failed: {e}")
+            return
+
+        caller.msg(
+            f"wb_build: Builder created {len(created)} object{'' if len(created) == 1 else 's'}:"
+        )
+        for obj in created:
+            caller.msg(f"  {obj.dbref} {obj.key} ({obj.typeclass_path})")
