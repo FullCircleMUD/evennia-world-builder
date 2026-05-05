@@ -9,7 +9,7 @@ Map of all design documents in this directory, organised by category. Add new do
 
 ## Architecture and design
 
-No architecture docs yet. As scaffolding progresses and design decisions land, focused documents will be added here.
+- **[spike-1-load-from-github.md](spike-1-load-from-github.md)** — first PoC: validate that an Evennia superuser command can fetch and parse YAML from a private GitHub repo. Establishes the auth/fetch foundation for all subsequent spikes.
 
 ## Archive
 
