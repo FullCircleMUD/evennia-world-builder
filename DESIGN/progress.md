@@ -4,6 +4,7 @@ Running log of milestones with links to evidence. Reverse chronological — newe
 
 ## 2026-05-05
 
+- Library v0: `Reader` contract + `GitHubReader` shipped under `src/world_builder/readers/`. Spike command refactored to use `get_reader_class()(**kwargs).read()`; live `wbload` output unchanged. 12 unit tests green. `required_kwargs` class attribute lets consumers discover what kwargs each reader needs without reading docstrings. Settles spike 1's deferred "library/consumer fetch boundary" question. See [DESIGN/reader-api.md](reader-api.md).
 - Spike 1 verified. `wbload` in `examples/demo_game/` fetches and parses `hello.yaml` from the private `FullCircleMUD/world-builder-test-yaml` repo via PAT. All five paths confirmed (happy + four failure modes). Deferred questions in the spike doc are unblocked for design discussion.
 - Spike 1 (load YAML from a private GitHub repo) captured in [DESIGN/spike-1-load-from-github.md](spike-1-load-from-github.md). First PoC scope, decisions, and deferred questions are written down; ready for implementation in a demo gamedir.
 - Library verified installable end-to-end: dedicated venv at `world-builder/venv/`, `pip install -e .` succeeds, `python runtests.py` reports 2 smoke tests passing (`test_package_importable`, `test_version_is_string`).
