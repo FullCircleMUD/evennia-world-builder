@@ -38,8 +38,8 @@ The riskiest external integration is private-GitHub-to-running-Evennia. Authenti
 | Decision | Value |
 |---|---|
 | Auth mechanism | Personal Access Token (PAT) |
-| Credential location (spike) | `secret_settings.py` in the demo gamedir |
-| Repo URL location | `secret_settings.py` (alongside the PAT) |
+| PAT location | `secret_settings.py` (local); env var `WORLDBUILDER_GITHUB_PAT` (production) |
+| Repo coords (REPO/REF/PATH) | `settings.py` via `os.environ.get(NAME, default)`; env var or `secret_settings.py` overrides |
 | Fetch library | trial-and-error; start lightest (`urllib` → `requests` → `PyGithub` if needed) |
 | Test repo | `FCM/libraries/world-builder-test-yaml/` (private) |
 | Spike runs in | a demo gamedir under `world-builder/examples/` |
