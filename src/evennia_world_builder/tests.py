@@ -961,6 +961,180 @@ class ValidatorLocationWellFormedTest(TestCase):
         )
 
 
+class ValidatorLocksFieldShapeTest(TestCase):
+    """Tier 1 — locks is optional; non-empty string when present."""
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_no_locks_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_string_locks_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"locks": "examine:all();get:false()"})])
+        self.assertEqual(v.errors, [])
+
+    def test_non_string_locks_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"locks": ["examine:all()"]})])
+        self.assertTrue(any("'locks' must be a string" in e for e in v.errors))
+
+    def test_empty_string_locks_rejected(self):
+        # "I want no extra locks" is best expressed by omitting the
+        # field, not by writing an empty string.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"locks": ""})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+    def test_whitespace_only_locks_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"locks": "   "})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+
+class ValidatorAliasesFieldShapeTest(TestCase):
+    """Tier 1 — aliases is optional; when present, list of non-empty strings."""
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_no_aliases_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_aliases_list_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"aliases": []})])
+        self.assertEqual(v.errors, [])
+
+    def test_single_alias_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"aliases": ["bakery"]})])
+        self.assertEqual(v.errors, [])
+
+    def test_multiple_aliases_pass(self):
+        v = self._validator()
+        v.validate([self._entity({"aliases": ["bakery", "goldencrust", "shop"]})])
+        self.assertEqual(v.errors, [])
+
+    def test_aliases_not_a_list_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"aliases": "bakery"})])
+        self.assertTrue(any("'aliases' must be a list" in e for e in v.errors))
+
+    def test_non_string_alias_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"aliases": ["bakery", 42]})])
+        self.assertTrue(any("aliases[1]" in e and "must be a string" in e for e in v.errors))
+
+    def test_empty_string_alias_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"aliases": ["bakery", ""]})])
+        self.assertTrue(any("aliases[1]" in e and "non-empty" in e for e in v.errors))
+
+    def test_whitespace_only_alias_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"aliases": ["   "]})])
+        self.assertTrue(any("aliases[0]" in e and "non-empty" in e for e in v.errors))
+
+
+class ValidatorDescriptionFieldShapeTest(TestCase):
+    """Tier 1 — description is optional, must be a string when present."""
+
+    def _entity(self, content) -> LoadedEntity:
+        # Auto-inject the other mandatory Tier 1 fields.
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_no_description_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_string_description_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"description": "Smells of bread."})])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_string_description_passes(self):
+        # Author choice — accept it, don't second-guess.
+        v = self._validator()
+        v.validate([self._entity({"description": ""})])
+        self.assertEqual(v.errors, [])
+
+    def test_multiline_description_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"description": "Line one.\nLine two."})])
+        self.assertEqual(v.errors, [])
+
+    def test_int_description_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"description": 42})])
+        self.assertTrue(any("'description' must be a string" in e for e in v.errors))
+
+    def test_list_description_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"description": ["one", "two"]})])
+        self.assertTrue(any("'description' must be a string" in e for e in v.errors))
+
+    def test_dict_description_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"description": {"text": "..."}})])
+        self.assertTrue(any("'description' must be a string" in e for e in v.errors))
+
+
 class ValidatorTagsShapeTest(TestCase):
     """Tier 1 — verify _check_tags_field_shape on the tags field."""
 

@@ -203,6 +203,84 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
+def _check_locks_field_shape(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``locks:`` (when present) is a non-empty string.
+
+    Optional field. When supplied, the value is an Evennia lockstring
+    like ``"examine:all();get:false();puppet:perm(Wizards)"`` — a
+    semicolon-joined sequence of ``<lock>:<func()>`` clauses. We don't
+    parse the contents here (Evennia validates that itself when the
+    lockstring is applied); just enforce the outer shape and reject
+    empty/whitespace-only since "I want no extra locks" is best
+    expressed by omitting the field, not by writing an empty string.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "locks" not in content:
+        return None
+    value = content["locks"]
+    if not isinstance(value, str):
+        return (
+            f"{entity.path}: 'locks' must be a string, "
+            f"got {type(value).__name__}"
+        )
+    if not value.strip():
+        return (
+            f"{entity.path}: 'locks' must be a non-empty string "
+            f"(omit the field if you don't want any custom locks)"
+        )
+    return None
+
+
+def _check_aliases_field_shape(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``aliases:`` (when present) is a list of non-empty strings.
+
+    Optional field — absence is fine, empty list is fine. When present,
+    every entry must be a non-empty string. No dict form, no shorthand
+    forks; aliases are just alternate names for the object.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "aliases" not in content:
+        return None
+
+    aliases = content["aliases"]
+    if not isinstance(aliases, list):
+        return (
+            f"{entity.path}: 'aliases' must be a list, "
+            f"got {type(aliases).__name__}"
+        )
+
+    for index, alias in enumerate(aliases):
+        prefix = f"{entity.path}: aliases[{index}]"
+        if not isinstance(alias, str):
+            return (
+                f"{prefix}: must be a string, got {type(alias).__name__}"
+            )
+        if not alias.strip():
+            return f"{prefix}: must be a non-empty string"
+    return None
+
+
+def _check_description_field_shape(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``description:`` (when present) must be a string.
+
+    Optional field — absence is fine. The Builder writes the value to
+    ``db.desc`` verbatim; whatever the author writes (including empty
+    or whitespace-only) lands as-is. The shape check is just to catch
+    "I accidentally wrote a list / a number / a dict" situations early
+    instead of letting them bubble up as a confusing Evennia error.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "description" not in content:
+        return None
+    value = content["description"]
+    if not isinstance(value, str):
+        return (
+            f"{entity.path}: 'description' must be a string, "
+            f"got {type(value).__name__}"
+        )
+    return None
+
+
 def _check_typeclass_well_formed(entity: LoadedEntity) -> str | None:
     """Tier 1: every entity must declare ``typeclass`` as a non-empty string.
 
@@ -300,6 +378,9 @@ class Validator:
         _check_deployment_id_well_formed,
         _check_name_well_formed,
         _check_typeclass_well_formed,
+        _check_description_field_shape,
+        _check_aliases_field_shape,
+        _check_locks_field_shape,
         _check_tags_field_shape,
         _check_tags_no_reserved_category,
     )

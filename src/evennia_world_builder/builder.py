@@ -106,6 +106,20 @@ class Builder:
                 ) from e
 
             try:
+                self._apply_aliases(obj, entity)
+            except Exception as e:
+                raise BuilderError(
+                    f"failed to apply aliases for {entity.path!r}: {e}"
+                ) from e
+
+            try:
+                self._apply_locks(obj, entity)
+            except Exception as e:
+                raise BuilderError(
+                    f"failed to apply locks for {entity.path!r}: {e}"
+                ) from e
+
+            try:
                 self._apply_tags(obj, entity)
             except Exception as e:
                 raise BuilderError(
@@ -150,6 +164,34 @@ class Builder:
                         f"(deployment_file={path!r}): {e}"
                     ) from e
                 self.deleted_count += 1
+
+    def _apply_aliases(self, obj, entity: LoadedEntity) -> None:
+        """Apply each alias from ``content['aliases']`` to the object.
+
+        The validator's ``_check_aliases_field_shape`` predicate has
+        already guaranteed the field is a list of non-empty strings if
+        present, so this trusts shape.
+        """
+        content = entity.content if isinstance(entity.content, dict) else {}
+        for alias in content.get("aliases", []):
+            obj.aliases.add(alias)
+
+    def _apply_locks(self, obj, entity: LoadedEntity) -> None:
+        """Apply the lockstring from ``content['locks']`` if present.
+
+        Evennia's ``obj.locks.add(lockstring)`` parses a semicolon-joined
+        sequence of ``<lock>:<func()>`` clauses and adds/updates each
+        named lock — locks not mentioned in the YAML lockstring keep
+        their typeclass defaults.
+
+        The validator's ``_check_locks_field_shape`` predicate
+        guarantees the field is a non-empty string if present.
+        """
+        content = entity.content if isinstance(entity.content, dict) else {}
+        lockstring = content.get("locks")
+        if lockstring is None:
+            return
+        obj.locks.add(lockstring)
 
     def _apply_tags(self, obj, entity: LoadedEntity) -> None:
         """Apply author-supplied tags + the auto-set deployment pair.
