@@ -293,6 +293,30 @@ class DefinitionsTest(TestCase):
         d = Definitions.from_reader(reader)
         self.assertEqual(d.levels, ("zone", "room"))
 
+    def test_repo_ci_pre_validation_defaults_false(self):
+        self.assertFalse(Definitions.from_dict({"levels": ["zone"]}).repo_ci_pre_validation)
+
+    def test_repo_ci_pre_validation_explicit_true(self):
+        d = Definitions.from_dict({
+            "levels": ["zone"],
+            "repo-ci-pre-validation": True,
+        })
+        self.assertTrue(d.repo_ci_pre_validation)
+
+    def test_repo_ci_pre_validation_explicit_false(self):
+        d = Definitions.from_dict({
+            "levels": ["zone"],
+            "repo-ci-pre-validation": False,
+        })
+        self.assertFalse(d.repo_ci_pre_validation)
+
+    def test_repo_ci_pre_validation_must_be_bool(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions.from_dict({
+                "levels": ["zone"],
+                "repo-ci-pre-validation": "true",  # string, not bool
+            })
+
     def test_validate_query_empty_is_valid(self):
         Definitions(levels=("zone", "room")).validate_query({})
 
@@ -320,53 +344,109 @@ class DefinitionsTest(TestCase):
             Definitions(levels=()).validate_query({"zone": "x"})
 
 
-class ParseKvArgsTest(TestCase):
-    """Verify the wb_build argument parser helper."""
+class ParseArgsTest(TestCase):
+    """Verify the wb_build argument parser (kv pairs + flags + 'all')."""
 
-    def test_empty_input_returns_empty_dict(self):
-        from world_builder.commands import _parse_kv_args
+    def _parse(self, s):
+        from world_builder.commands import _parse_args
+        return _parse_args(s)
 
-        self.assertEqual(_parse_kv_args(""), {})
-        self.assertEqual(_parse_kv_args("   "), {})
+    def test_all_token_returns_empty_query(self):
+        query, flags = self._parse("all")
+        self.assertEqual(query, {})
+        self.assertEqual(flags, set())
 
     def test_single_pair(self):
-        from world_builder.commands import _parse_kv_args
-
-        self.assertEqual(_parse_kv_args("zone=millholm"), {"zone": "millholm"})
+        query, flags = self._parse("zone=millholm")
+        self.assertEqual(query, {"zone": "millholm"})
+        self.assertEqual(flags, set())
 
     def test_multiple_pairs(self):
-        from world_builder.commands import _parse_kv_args
-
-        self.assertEqual(
-            _parse_kv_args("zone=millholm room=bakery"),
-            {"zone": "millholm", "room": "bakery"},
-        )
+        query, flags = self._parse("zone=millholm room=bakery")
+        self.assertEqual(query, {"zone": "millholm", "room": "bakery"})
+        self.assertEqual(flags, set())
 
     def test_extra_whitespace_tolerated(self):
-        from world_builder.commands import _parse_kv_args
+        query, _ = self._parse("  zone=millholm   room=bakery  ")
+        self.assertEqual(query, {"zone": "millholm", "room": "bakery"})
 
-        self.assertEqual(
-            _parse_kv_args("  zone=millholm   room=bakery  "),
-            {"zone": "millholm", "room": "bakery"},
-        )
+    def test_force_validate_flag_with_kv(self):
+        query, flags = self._parse("zone=millholm --force-validate")
+        self.assertEqual(query, {"zone": "millholm"})
+        self.assertEqual(flags, {"force-validate"})
+
+    def test_force_validate_flag_with_all(self):
+        query, flags = self._parse("all --force-validate")
+        self.assertEqual(query, {})
+        self.assertEqual(flags, {"force-validate"})
+
+    def test_flag_position_does_not_matter(self):
+        query, flags = self._parse("--force-validate zone=millholm")
+        self.assertEqual(query, {"zone": "millholm"})
+        self.assertEqual(flags, {"force-validate"})
+
+    def test_empty_input_raises_no_scope(self):
+        # Empty / whitespace-only input has no positional tokens — no scope.
+        with self.assertRaises(ValueError):
+            self._parse("")
+        with self.assertRaises(ValueError):
+            self._parse("   ")
+
+    def test_flags_only_raises_no_scope(self):
+        # A flag is not a scope; require 'all' or a level=value pair.
+        with self.assertRaises(ValueError):
+            self._parse("--force-validate")
 
     def test_token_without_equals_raises(self):
-        from world_builder.commands import _parse_kv_args
-
         with self.assertRaises(ValueError):
-            _parse_kv_args("zone")
+            self._parse("zone")
 
     def test_empty_value_raises(self):
-        from world_builder.commands import _parse_kv_args
-
         with self.assertRaises(ValueError):
-            _parse_kv_args("zone=")
+            self._parse("zone=")
 
     def test_empty_key_raises(self):
-        from world_builder.commands import _parse_kv_args
-
         with self.assertRaises(ValueError):
-            _parse_kv_args("=millholm")
+            self._parse("=millholm")
+
+
+class FilterByQueryTest(TestCase):
+    """Verify _filter_by_query reduces a whole-repo entity list to a scope."""
+
+    def _entities(self):
+        return [
+            LoadedEntity(location={"zone": "millholm", "room": "inn"},
+                         content={"deployment_id": 1}, path="millholm/inn.yaml"),
+            LoadedEntity(location={"zone": "millholm", "room": "bakery"},
+                         content={"deployment_id": 1}, path="millholm/bakery.yaml"),
+            LoadedEntity(location={"zone": "aethenveil"},
+                         content={"deployment_id": 1}, path="aethenveil.yaml"),
+        ]
+
+    def test_empty_query_returns_all(self):
+        from world_builder.commands import _filter_by_query
+        e = self._entities()
+        self.assertEqual(_filter_by_query(e, {}), e)
+
+    def test_filter_by_zone_returns_subtree(self):
+        from world_builder.commands import _filter_by_query
+        result = _filter_by_query(self._entities(), {"zone": "millholm"})
+        self.assertEqual(len(result), 2)
+        self.assertEqual({e.path for e in result},
+                         {"millholm/inn.yaml", "millholm/bakery.yaml"})
+
+    def test_filter_full_path_returns_single(self):
+        from world_builder.commands import _filter_by_query
+        result = _filter_by_query(
+            self._entities(), {"zone": "millholm", "room": "bakery"}
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].path, "millholm/bakery.yaml")
+
+    def test_filter_no_match_returns_empty(self):
+        from world_builder.commands import _filter_by_query
+        result = _filter_by_query(self._entities(), {"zone": "ghost"})
+        self.assertEqual(result, [])
 
 
 class FinderTest(TestCase):

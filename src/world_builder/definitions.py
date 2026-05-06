@@ -24,9 +24,18 @@ class Definitions:
                 Empty tuple () is valid and means a flat world (only an
                 empty query is meaningful — `find()` returns root, Loader
                 walks everything from there).
+        repo_ci_pre_validation:
+                Consumer's assertion that the content repo has a CI gate
+                running wb-validate on every PR (e.g. GitHub branch
+                protection + required status check). False (the safe
+                default) makes wb_build pre-validate the whole repo before
+                every build; True trusts the gate and skips that work.
+                The library cannot verify this assertion — see
+                DESIGN/validation-gating.md for rationale.
     """
 
     levels: tuple = ()
+    repo_ci_pre_validation: bool = False
 
     @classmethod
     def from_reader(cls, reader: Reader, path: str = _DEFINITIONS_PATH) -> "Definitions":
@@ -56,7 +65,15 @@ class Definitions:
                 raise DefinitionsError(
                     f"{source_path}: 'levels' entries must be strings; got {level!r}"
                 )
-        return cls(levels=tuple(levels))
+
+        gating = data.get("repo-ci-pre-validation", False)
+        if not isinstance(gating, bool):
+            raise DefinitionsError(
+                f"{source_path}: 'repo-ci-pre-validation' must be a boolean, "
+                f"got {type(gating).__name__}"
+            )
+
+        return cls(levels=tuple(levels), repo_ci_pre_validation=gating)
 
     def validate_query(self, query: dict) -> None:
         """Validate a query against the declared levels.

@@ -43,5 +43,6 @@ The same `--reader=...` dispatch will host `wb-build` (apply against a real Even
 ## See also
 
 - [validator.md](validator.md) — the checks the CLI surfaces.
+- [validation-gating.md](validation-gating.md) — how `wb-validate` slots into the CI gating model that lets `wb_build` skip pre-validation.
 - [reader-api.md](reader-api.md) — Reader contract; the same readers serve in-game and standalone.
 - [library-commands.md](library-commands.md) — the in-game counterpart (`wb_build`).

@@ -2,6 +2,10 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-05-06
+
+- Validation gating model + `--force-validate` flag landed. `definitions.yaml` carries `repo-ci-pre-validation` (default `false`); when false, `wb_build` pre-validates the whole repo before every build, when true it skips the walk and trusts external CI. Per-invocation `--force-validate` flag overrides the setting (paranoid one-off). Library never inspects or verifies the consumer's CI setup — defaults to safe, makes the cost of "fast but unsafe" obvious via long warning comments in the template. Three-tier cross-reference correctness (CI gate primary, Builder DB-lookup at create-time secondary, inline scope-bounded validator always) covers the failure modes without forcing whole-repo walks on every single-file redeploy. wb_build arg parser extended to handle `--flag` tokens alongside `level=value`. 84 unit tests green. See [DESIGN/validation-gating.md](validation-gating.md).
+
 ## 2026-05-05
 
 - Validator architecture + first checks shipped, plus standalone `wb-validate` CLI. Two-tier check model: stateless predicates (`PER_ENTITY_PREDICATES`, pure `(entity) -> finding | None`) and stateful checks (methods that read/update the per-file `{deployment_file: {ids}}` index incrementally during the per-entity pass). Complete-refusal semantics: every finding is gathered before `validate()` raises `ValidatorError`, and both invocation paths (in-game `wb_build`, standalone `wb-validate`) surface the full message list before halting. First two checks landed: `deployment_id` is mandatory non-negative integer (rejects `bool`); within a file, `deployment_id` is unique. New `LocalReader` slots into the existing reader dispatch (`WORLDBUILDER_READER`); the new console-script `wb-validate` runs the same Reader → Definitions → Finder → Loader → Validator pipeline outside Evennia for dev iteration / CI / pre-commit. 71 unit tests green; live smoke against test repo (clean run) and a temp synthetic repo (refusal path with stderr halt-summary, exit 1) both verified. See [DESIGN/validator.md](validator.md), [DESIGN/cli.md](cli.md).

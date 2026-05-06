@@ -11,7 +11,9 @@ Conventions for any command shipping from world-builder:
   game does not need to import or wire these manually.
 
 See DESIGN/discovery-and-loading.md for the pipeline these commands
-ultimately exercise.
+ultimately exercise. Validation gating (when wb_build pre-validates
+the whole repo vs trusting the consumer's CI gate) is documented in
+DESIGN/validation-gating.md.
 """
 import pprint
 
@@ -35,16 +37,41 @@ from .loader import Loader
 from .validator import Validator
 
 
-def _parse_kv_args(args_str: str) -> dict:
-    """Parse 'key1=val1 key2=val2' into a dict.
+_ALL_TOKEN = "all"
+_FORCE_VALIDATE_FLAG = "force-validate"
 
-    Empty input returns an empty dict (the "build all" query).
 
-    Raises ValueError if any token isn't of the form key=value or if
-    either side of the `=` is empty.
+def _parse_args(args_str: str) -> tuple[dict, set]:
+    """Parse ``all | level=value...  [--flag...]`` into ``(query, flags)``.
+
+    Returns:
+        query: dict of level → value. Empty dict means the literal ``all``
+               token was supplied (build-everything scope).
+        flags: set of flag names (with the leading ``--`` stripped).
+
+    Raises:
+        ValueError: if no scope token is present, if a non-flag token
+                    is malformed, or if either side of an ``=`` is empty.
     """
     pairs: dict = {}
+    flags: set = set()
+    positional: list = []
+
     for token in args_str.split():
+        if token.startswith("--"):
+            flags.add(token[2:])
+        else:
+            positional.append(token)
+
+    if not positional:
+        raise ValueError(
+            "no scope specified — use 'all' or one or more level=value pairs"
+        )
+
+    if positional == [_ALL_TOKEN]:
+        return pairs, flags
+
+    for token in positional:
         if "=" not in token:
             raise ValueError(
                 f"Argument {token!r} is not of the form key=value"
@@ -57,22 +84,63 @@ def _parse_kv_args(args_str: str) -> dict:
                 f"Argument {token!r}: both key and value must be non-empty"
             )
         pairs[key] = value
-    return pairs
+    return pairs, flags
+
+
+def _filter_by_query(entities: list, query: dict) -> list:
+    """Return the subset of entities whose location matches every (k, v) in query.
+
+    Used after a whole-repo pre-validation pass to extract the build-scoped
+    subset without re-running the Loader. An empty query matches everything.
+    """
+    if not query:
+        return entities
+    return [
+        e for e in entities
+        if all(e.location.get(k) == v for k, v in query.items())
+    ]
+
+
+def _run_validator(caller, definitions, entities, refusal_label) -> bool:
+    """Run a Validator pass over entities. Surface every message via caller.
+
+    Returns True on a clean pass, False if the validator refused. Callers
+    should return early on False.
+    """
+    validator = Validator(definitions)
+    try:
+        validator.validate(entities)
+    except ValidatorError as e:
+        for msg in validator.messages:
+            caller.msg(msg)
+        caller.msg(f"wb_build: refusing to build — {refusal_label}: {e}")
+        return False
+    for msg in validator.messages:
+        caller.msg(msg)
+    return True
 
 
 class CmdWBBuild(BaseCommand):
     """Build world content from the configured manifest source.
 
     Usage:
-        wb_build all
-        wb_build <level>=<value> [<level>=<value> ...]
+        wb_build all [--force-validate]
+        wb_build <level>=<value> [<level>=<value> ...] [--force-validate]
 
     A bare ``wb_build`` with no scope does nothing — the explicit
     ``all`` keyword is required to build the entire world. This is a
     deliberate guard rail against an accidental full-world rebuild.
 
-    Examples (assuming the consumer's definitions.yaml declares
-    ``levels: [zone, room]``):
+    Validation gating: ``definitions.yaml`` carries a
+    ``repo-ci-pre-validation`` flag (default ``false``). When false,
+    wb_build pre-validates the whole repo before every build — safe
+    but expensive at scale. When the consumer has set up CI to gate
+    PRs (GitHub branch protection + required wb-validate check), they
+    can flip the flag to true and wb_build will skip the whole-repo
+    walk and trust the gate. ``--force-validate`` overrides the flag
+    for one invocation: pre-validate this run regardless.
+
+    Examples (assuming ``levels: [zone, room]``):
 
         wb_build all
             Build everything in the manifest.
@@ -82,6 +150,10 @@ class CmdWBBuild(BaseCommand):
 
         wb_build zone=millholm room=bakery
             Build the single room.
+
+        wb_build zone=millholm room=bakery --force-validate
+            Same, but pre-validate the whole repo first regardless of
+            the gating setting.
     """
 
     key = "wb_build"
@@ -100,16 +172,12 @@ class CmdWBBuild(BaseCommand):
             )
             return
 
-        if args == "all":
-            query: dict = {}
-        else:
-            try:
-                query = _parse_kv_args(args)
-            except ValueError as e:
-                caller.msg(f"wb_build: {e}")
-                return
+        try:
+            query, flags = _parse_args(args)
+        except ValueError as e:
+            caller.msg(f"wb_build: {e}")
+            return
 
-        # Get a configured reader (resolved class + WORLDBUILDER_READER_KWARGS).
         try:
             reader = get_configured_reader()
         except Exception as e:
@@ -119,7 +187,6 @@ class CmdWBBuild(BaseCommand):
             )
             return
 
-        # Load definitions.yaml from the source.
         try:
             definitions = Definitions.from_reader(reader)
         except ReaderError as e:
@@ -129,7 +196,6 @@ class CmdWBBuild(BaseCommand):
             caller.msg(f"wb_build: definitions.yaml is malformed: {e}")
             return
 
-        # Semantic validation: query keys must be a contiguous prefix of levels.
         try:
             definitions.validate_query(query)
         except DefinitionsError as e:
@@ -137,68 +203,95 @@ class CmdWBBuild(BaseCommand):
             return
 
         caller.msg(
-            f"wb_build: levels={list(definitions.levels)}, query={query}"
+            f"wb_build: levels={list(definitions.levels)}, query={query}, "
+            f"flags={sorted(flags)}"
         )
 
-        # Walk the manifest tree to find the entry point matching the query.
         finder = Finder(reader, definitions)
-        try:
-            found = finder.find(query)
-        except FinderQueryError as e:
-            caller.msg(f"wb_build: {e}")
-            return
-        except FinderManifestError as e:
-            caller.msg(f"wb_build: manifest error: {e}")
-            return
-
-        caller.msg(
-            f"wb_build: Finder located path={found.path!r}, "
-            f"kind={found.kind}, location={found.location}"
-        )
-
-        # Recursively read all leaf content under the located entry point.
         loader = Loader(reader, definitions)
-        try:
-            entities = loader.load(found)
-        except LoaderMissingIndexError as e:
-            caller.msg(f"wb_build: {e}")
-            return
-        except LoaderMissingEntryError as e:
-            caller.msg(f"wb_build: {e}")
-            return
-        except ReaderError as e:
-            caller.msg(f"wb_build: read error during loading: {e}")
-            return
 
-        caller.msg(
-            f"wb_build: Loader returned {len(entities)} entit{'y' if len(entities) == 1 else 'ies'}"
-        )
+        # Decide whether to pre-validate the whole repo. The setting is the
+        # consumer's persistent claim ("I have CI gating"); the flag is an
+        # ad-hoc per-invocation override. Pre-validation runs whenever EITHER
+        # the setting is False (default safe) OR the flag is present.
+        force_validate = _FORCE_VALIDATE_FLAG in flags
+        should_pre_validate = (not definitions.repo_ci_pre_validation) or force_validate
+
+        if should_pre_validate:
+            reason = (
+                "--force-validate flag set"
+                if force_validate
+                else "definitions.repo-ci-pre-validation is False"
+            )
+            caller.msg(f"wb_build: pre-validating whole repo ({reason})")
+            try:
+                all_entities = loader.load(finder.find())
+            except FinderManifestError as e:
+                caller.msg(f"wb_build: manifest error during pre-validation: {e}")
+                return
+            except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
+                caller.msg(f"wb_build: pre-validation load failed: {e}")
+                return
+            except ReaderError as e:
+                caller.msg(f"wb_build: read error during pre-validation: {e}")
+                return
+
+            caller.msg(
+                f"wb_build: pre-validation loaded {len(all_entities)} "
+                f"entit{'y' if len(all_entities) == 1 else 'ies'} (whole repo)"
+            )
+            if not _run_validator(caller, definitions, all_entities, "pre-validation failed"):
+                return
+
+            entities = _filter_by_query(all_entities, query)
+            caller.msg(
+                f"wb_build: filtered to {len(entities)} entit"
+                f"{'y' if len(entities) == 1 else 'ies'} matching scope"
+            )
+        else:
+            caller.msg(
+                "wb_build: skipping pre-validation "
+                "(definitions.repo-ci-pre-validation is True; trusting CI gate)"
+            )
+            try:
+                found = finder.find(query)
+            except FinderQueryError as e:
+                caller.msg(f"wb_build: {e}")
+                return
+            except FinderManifestError as e:
+                caller.msg(f"wb_build: manifest error: {e}")
+                return
+
+            caller.msg(
+                f"wb_build: Finder located path={found.path!r}, "
+                f"kind={found.kind}, location={found.location}"
+            )
+
+            try:
+                entities = loader.load(found)
+            except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
+                caller.msg(f"wb_build: {e}")
+                return
+            except ReaderError as e:
+                caller.msg(f"wb_build: read error during loading: {e}")
+                return
+
+            caller.msg(
+                f"wb_build: Loader returned {len(entities)} entit"
+                f"{'y' if len(entities) == 1 else 'ies'}"
+            )
+            if not _run_validator(caller, definitions, entities, "validation failed"):
+                return
+
         for i, entity in enumerate(entities, 1):
             caller.msg(
                 f"  [{i}] {entity.path} — location={entity.location}"
             )
             caller.msg(f"      content: {pprint.pformat(entity.content)}")
 
-        # Validator — runs every check, gathers all findings into
-        # validator.messages, then raises ValidatorError if any of them
-        # were errors (per the "complete refusal, no partial apply"
-        # principle). On error we still surface every finding before
-        # halting so the operator sees the full list in one run.
-        validator = Validator(definitions)
-        try:
-            validated = validator.validate(entities)
-        except ValidatorError as e:
-            for msg in validator.messages:
-                caller.msg(msg)
-            caller.msg(f"wb_build: refusing to build — {e}")
-            return
-        for msg in validator.messages:
-            caller.msg(msg)
-
-        # Builder — minimum viable: one Evennia object per entity.
         builder = Builder(definitions)
         try:
-            created = builder.build(validated)
+            created = builder.build(entities)
         except BuilderError as e:
             caller.msg(f"wb_build: build failed: {e}")
             return

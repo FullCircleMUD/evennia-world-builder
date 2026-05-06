@@ -14,6 +14,7 @@ Map of all design documents in this directory, organised by category. Add new do
 - **[discovery-and-loading.md](discovery-and-loading.md)** — Finder and Loader: how the library navigates a content repo's manifest tree (definitions.yaml + per-folder index.yaml) and assembles all matching content for downstream processing. Settles spike 1's deferred "indexing convention" question.
 - **[deployment-identity.md](deployment-identity.md)** — load-bearing identity scheme: `(deployment_file, deployment_id)` composite, file as atomic deployment unit, cross-reference syntax, cleanup model. Anchor for Validator, Builder, and partial deploys.
 - **[validator.md](validator.md)** — two-tier check architecture (stateless predicates + stateful per-file index), complete-refusal semantics, currently shipped checks, and how to add new ones.
+- **[validation-gating.md](validation-gating.md)** — when `wb_build` pre-validates the whole repo vs trusts the consumer's CI gate. Four-way decision matrix (`repo-ci-pre-validation` setting × `--force-validate` flag), three-tier cross-reference correctness model, why the library never verifies gating itself.
 - **[cli.md](cli.md)** — standalone console-script CLIs (`wb-validate`); `--reader` dispatch, exit-code semantics, and how this tier coexists with the in-game commands.
 - **[library-commands.md](library-commands.md)** — conventions for library-shipped admin commands (`wb_` prefix, superuser lock, AppConfig auto-install into AccountCmdSet) and current commands (`wb_build`).
 
