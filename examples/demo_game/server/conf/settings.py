@@ -38,11 +38,11 @@ SERVERNAME = "demo_game"
 
 
 ######################################################################
-# world-builder library — INSTALLED_APPS registration so the library's
-# AppConfig.ready() fires and auto-installs library-shipped commands
-# (e.g. wb_build) into CharacterCmdSet.
+# evennia-world-builder library — INSTALLED_APPS registration so the
+# library's AppConfig.ready() fires and auto-installs library-shipped
+# commands (e.g. wb_build) into CharacterCmdSet.
 ######################################################################
-INSTALLED_APPS = list(INSTALLED_APPS) + ["world_builder"]
+INSTALLED_APPS = list(INSTALLED_APPS) + ["evennia_world_builder"]
 
 
 ######################################################################
@@ -57,7 +57,7 @@ WORLDBUILDER_GITHUB_PAT = os.environ.get(
 )
 WORLDBUILDER_GITHUB_REPO = os.environ.get(
     "WORLDBUILDER_GITHUB_REPO",
-    "FullCircleMUD/world-builder-test-yaml",
+    "FullCircleMUD/evennia-world-builder-test-yaml",
 )
 WORLDBUILDER_GITHUB_REF = os.environ.get(
     "WORLDBUILDER_GITHUB_REF",

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Tests for world-builder.
+"""Tests for evennia-world-builder.
 
 Verifies the package is importable, the Reader contract is honoured by
 GitHubReader against a mocked urllib, settings-based dispatch resolves
@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 
-import world_builder
-from world_builder import (
+import evennia_world_builder
+from evennia_world_builder import (
     Definitions,
     DefinitionsError,
     Finder,
@@ -43,7 +43,7 @@ class FakeReader:
     """Used by GetReaderClassTest to verify dispatch via @override_settings.
 
     Defined at module scope so it is importable as
-    ``world_builder.tests.FakeReader``. Distinct from FixtureReader below.
+    ``evennia_world_builder.tests.FakeReader``. Distinct from FixtureReader below.
     """
 
 
@@ -66,7 +66,7 @@ class FixtureReader:
 
 
 # Synthetic manifest used by both Finder and Loader tests. Mirrors the
-# scaffolded layout in world-builder-test-yaml so behaviour is the same
+# scaffolded layout in evennia-world-builder-test-yaml so behaviour is the same
 # in unit tests and against the live private repo.
 SCAFFOLD = {
     "definitions.yaml": {"levels": ["zone", "room"]},
@@ -100,10 +100,10 @@ class SmokeTest(TestCase):
     """End-to-end install + runner sanity check."""
 
     def test_package_importable(self):
-        self.assertTrue(hasattr(world_builder, "__version__"))
+        self.assertTrue(hasattr(evennia_world_builder, "__version__"))
 
     def test_version_is_string(self):
-        self.assertIsInstance(world_builder.__version__, str)
+        self.assertIsInstance(evennia_world_builder.__version__, str)
 
 
 class CmdWBBuildSmokeTest(TestCase):
@@ -112,7 +112,7 @@ class CmdWBBuildSmokeTest(TestCase):
     is exercised by live smoke testing in the demo gamedir."""
 
     def test_command_importable(self):
-        from world_builder.commands import CmdWBBuild
+        from evennia_world_builder.commands import CmdWBBuild
 
         self.assertEqual(CmdWBBuild.key, "wb_build")
         self.assertEqual(CmdWBBuild.locks, "cmd:superuser()")
@@ -141,7 +141,7 @@ class GitHubReaderTest(TestCase):
             GitHubReader.required_kwargs, ("repo", "ref", "pat")
         )
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_happy_path_returns_raw_and_parsed(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b"key: value\n")
         result = GitHubReader(**self.KWARGS).read(self.PATH)
@@ -149,7 +149,7 @@ class GitHubReaderTest(TestCase):
         self.assertEqual(result.raw_bytes, b"key: value\n")
         self.assertEqual(result.parsed, {"key": "value"})
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_request_url_and_headers(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b"x: 1\n")
         GitHubReader(**self.KWARGS).read(self.PATH)
@@ -162,9 +162,9 @@ class GitHubReaderTest(TestCase):
         self.assertEqual(headers_lower["authorization"], "Bearer ghp_test")
         self.assertEqual(headers_lower["accept"], "application/vnd.github.raw")
         self.assertEqual(headers_lower["x-github-api-version"], "2022-11-28")
-        self.assertEqual(headers_lower["user-agent"], "world-builder")
+        self.assertEqual(headers_lower["user-agent"], "evennia-world-builder")
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_401_raises_auth_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.HTTPError(
             "url", 401, "Unauthorized", {}, None
@@ -172,7 +172,7 @@ class GitHubReaderTest(TestCase):
         with self.assertRaises(ReaderAuthError):
             GitHubReader(**self.KWARGS).read(self.PATH)
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_404_raises_not_found_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.HTTPError(
             "url", 404, "Not Found", {}, None
@@ -180,13 +180,13 @@ class GitHubReaderTest(TestCase):
         with self.assertRaises(ReaderNotFoundError):
             GitHubReader(**self.KWARGS).read(self.PATH)
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_url_error_raises_network_error(self, mock_urlopen):
         mock_urlopen.side_effect = urllib.error.URLError("nodename nor servname")
         with self.assertRaises(ReaderNetworkError):
             GitHubReader(**self.KWARGS).read(self.PATH)
 
-    @patch("world_builder.readers.github.urllib.request.urlopen")
+    @patch("evennia_world_builder.readers.github.urllib.request.urlopen")
     def test_bad_yaml_raises_parse_error(self, mock_urlopen):
         mock_urlopen.return_value = self._response_with_payload(b":::not yaml\n: : :")
         with self.assertRaises(ReaderParseError):
@@ -250,11 +250,11 @@ class GetReaderClassTest(TestCase):
     def test_default_returns_github_reader(self):
         self.assertIs(get_reader_class(), GitHubReader)
 
-    @override_settings(WORLDBUILDER_READER="world_builder.tests.FakeReader")
+    @override_settings(WORLDBUILDER_READER="evennia_world_builder.tests.FakeReader")
     def test_override_via_settings(self):
         self.assertIs(get_reader_class(), FakeReader)
 
-    @override_settings(WORLDBUILDER_READER="world_builder.does_not_exist.Nope")
+    @override_settings(WORLDBUILDER_READER="evennia_world_builder.does_not_exist.Nope")
     def test_bad_dotted_path_raises(self):
         with self.assertRaises((ImportError, AttributeError)):
             get_reader_class()
@@ -348,7 +348,7 @@ class ParseArgsTest(TestCase):
     """Verify the wb_build argument parser (kv pairs + flags + 'all')."""
 
     def _parse(self, s):
-        from world_builder.commands import _parse_args
+        from evennia_world_builder.commands import _parse_args
         return _parse_args(s)
 
     def test_all_token_returns_empty_query(self):
@@ -424,19 +424,19 @@ class FilterByQueryTest(TestCase):
         ]
 
     def test_empty_query_returns_all(self):
-        from world_builder.commands import _filter_by_query
+        from evennia_world_builder.commands import _filter_by_query
         e = self._entities()
         self.assertEqual(_filter_by_query(e, {}), e)
 
     def test_filter_by_zone_returns_subtree(self):
-        from world_builder.commands import _filter_by_query
+        from evennia_world_builder.commands import _filter_by_query
         result = _filter_by_query(self._entities(), {"zone": "millholm"})
         self.assertEqual(len(result), 2)
         self.assertEqual({e.path for e in result},
                          {"millholm/inn.yaml", "millholm/bakery.yaml"})
 
     def test_filter_full_path_returns_single(self):
-        from world_builder.commands import _filter_by_query
+        from evennia_world_builder.commands import _filter_by_query
         result = _filter_by_query(
             self._entities(), {"zone": "millholm", "room": "bakery"}
         )
@@ -444,7 +444,7 @@ class FilterByQueryTest(TestCase):
         self.assertEqual(result[0].path, "millholm/bakery.yaml")
 
     def test_filter_no_match_returns_empty(self):
-        from world_builder.commands import _filter_by_query
+        from evennia_world_builder.commands import _filter_by_query
         result = _filter_by_query(self._entities(), {"zone": "ghost"})
         self.assertEqual(result, [])
 

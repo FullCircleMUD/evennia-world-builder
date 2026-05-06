@@ -14,7 +14,7 @@ Both use the same downstream pipeline. A developer iterates locally with `LocalR
 ## Decisions
 
 - **Strategy pattern, not ABC.** `Reader` is a base class with `read()` raising `NotImplementedError`. Duck-typed; mirrors evennia-shards convention.
-- **Settings-based dispatch.** `WORLDBUILDER_READER` (dotted path, default `"world_builder.GitHubReader"`) resolved by `get_reader_class()`. Consumer-extensible without library changes (principle #3).
+- **Settings-based dispatch.** `WORLDBUILDER_READER` (dotted path, default `"evennia_world_builder.GitHubReader"`) resolved by `get_reader_class()`. Consumer-extensible without library changes (principle #3).
 - **Kwargs are consumer-side.** Library does not dictate setting names per platform. The consumer constructs the reader with whatever kwargs that reader requires.
 - **`ReaderResult` dataclass** holds both raw bytes and parsed value. Preserves observability for diagnostics; future failure modes (e.g. partial parse) can surface raw bytes alongside the failure.
 - **Typed exceptions.** `ReaderError` base + `ReaderAuthError` / `ReaderNotFoundError` / `ReaderNetworkError` / `ReaderParseError` subtypes. Consumer can catch each class semantically. UTF-8 decode failures fold into `ReaderParseError` (degenerate parse case).
@@ -32,7 +32,7 @@ The spike's "library/consumer boundary for fetch+auth" is now resolved:
 
 ## Test approach
 
-Unit tests in `src/world_builder/tests.py`:
+Unit tests in `src/evennia_world_builder/tests.py`:
 
 - `GitHubReaderTest` — mocks `urllib.request.urlopen` via `unittest.mock.patch`. Covers happy path (raw + parsed return, URL/header construction), four error paths (401, 404, network, bad YAML), and `required_kwargs` declaration.
 - `LocalReaderTest` — uses `tempfile.TemporaryDirectory` for real-filesystem fixtures. Covers happy path (single + nested paths), missing-file + bad-YAML error paths, path-traversal guard (escape attempts via `..` resolve outside `root` and are rejected as not-found), and string-vs-Path root acceptance.

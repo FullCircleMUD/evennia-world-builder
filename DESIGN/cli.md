@@ -1,6 +1,6 @@
 # Standalone CLI
 
-world-builder ships console-script CLIs that run independently of any Evennia process. They share the library's pipeline (`Reader → Definitions → Finder → Loader → Validator`) — only the invocation and output channel differ from the in-game `wb_build` command. CLIs exist so authors can validate content from a developer shell, a pre-commit hook, or CI without standing up Evennia.
+evennia-world-builder ships console-script CLIs that run independently of any Evennia process. They share the library's pipeline (`Reader → Definitions → Finder → Loader → Validator`) — only the invocation and output channel differ from the in-game `wb_build` command. CLIs exist so authors can validate content from a developer shell, a pre-commit hook, or CI without standing up Evennia.
 
 ## Currently shipped
 

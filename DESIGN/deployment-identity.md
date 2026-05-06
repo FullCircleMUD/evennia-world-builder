@@ -1,10 +1,10 @@
 # Deployment Identity
 
-The load-bearing identity scheme for everything world-builder creates in the consumer's database. Every downstream subsystem — Validator, Builder, cleanup, cross-references, partial deploys — operates in terms of this contract.
+The load-bearing identity scheme for everything evennia-world-builder creates in the consumer's database. Every downstream subsystem — Validator, Builder, cleanup, cross-references, partial deploys — operates in terms of this contract.
 
 ## Principle
 
-**Every Evennia object world-builder creates is identified by a composite of two values: `(deployment_file, deployment_id)`.** This pair is globally unique across the whole world. It is the handle the deployment system uses to find an object on rebuild, the handle authors use to point one entity at another, and the handle cleanup uses to scope a redeploy.
+**Every Evennia object evennia-world-builder creates is identified by a composite of two values: `(deployment_file, deployment_id)`.** This pair is globally unique across the whole world. It is the handle the deployment system uses to find an object on rebuild, the handle authors use to point one entity at another, and the handle cleanup uses to scope a redeploy.
 
 `deployment_file` is set automatically by the Builder from the source path. `deployment_id` is set manually by the author in YAML, mandatory on every entity, an integer unique within its file.
 

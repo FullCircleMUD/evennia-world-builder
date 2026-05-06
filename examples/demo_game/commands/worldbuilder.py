@@ -1,4 +1,4 @@
-"""Demo command using the world-builder library reader.
+"""Demo command using the evennia-world-builder library reader.
 
 Calls the configured reader (default: GitHubReader) to fetch and parse
 a YAML file. Reads GitHub-specific settings from Django settings,
@@ -6,11 +6,11 @@ constructs the reader with the appropriate kwargs, and emits both the
 raw bytes and the parsed dict.
 
 Promoted from the original spike: the urllib/yaml fetch logic now
-lives in world_builder.GitHubReader; this command is the thin
+lives in evennia_world_builder.GitHubReader; this command is the thin
 consumer-side wrapper that wires settings into the library.
 
-See world-builder/DESIGN/spike-1-load-from-github.md for the spike
-contract.
+See evennia-world-builder/DESIGN/spike-1-load-from-github.md for the
+spike contract.
 """
 import pprint
 
@@ -18,7 +18,7 @@ from django.conf import settings
 
 from evennia.commands.command import Command as BaseCommand
 
-from world_builder import (
+from evennia_world_builder import (
     ReaderAuthError,
     ReaderError,
     ReaderNetworkError,
@@ -36,7 +36,7 @@ class CmdWBLoad(BaseCommand):
 
     Reads PAT, repo, ref, and path from Django settings (PAT lives in
     secret_settings.py for local dev). Resolves the configured reader
-    via WORLDBUILDER_READER (default: world_builder.GitHubReader),
+    via WORLDBUILDER_READER (default: evennia_world_builder.GitHubReader),
     constructs it with the kwargs, calls read(), and emits both raw
     bytes and parsed dict.
     """

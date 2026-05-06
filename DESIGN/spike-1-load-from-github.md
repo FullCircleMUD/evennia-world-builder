@@ -1,6 +1,6 @@
 # Spike 1 — Load YAML from a Private GitHub Repo
 
-The first proof-of-concept for world-builder. Validates that an Evennia superuser command can authenticate against a private GitHub repository, fetch a YAML file into memory, and parse it via `yaml.safe_load`. Everything else — schema, validation, DB writes, idempotency — is deliberately deferred to subsequent spikes.
+The first proof-of-concept for evennia-world-builder. Validates that an Evennia superuser command can authenticate against a private GitHub repository, fetch a YAML file into memory, and parse it via `yaml.safe_load`. Everything else — schema, validation, DB writes, idempotency — is deliberately deferred to subsequent spikes.
 
 ## Why this spike first
 
@@ -41,8 +41,8 @@ The riskiest external integration is private-GitHub-to-running-Evennia. Authenti
 | PAT location | `secret_settings.py` (local); env var `WORLDBUILDER_GITHUB_PAT` (production) |
 | Repo coords (REPO/REF/PATH) | `settings.py` via `os.environ.get(NAME, default)`; env var or `secret_settings.py` overrides |
 | Fetch library | trial-and-error; start lightest (`urllib` → `requests` → `PyGithub` if needed) |
-| Test repo | `FCM/libraries/world-builder-test-yaml/` (private) |
-| Spike runs in | a demo gamedir under `world-builder/examples/` |
+| Test repo | `FCM/libraries/evennia-world-builder-test-yaml/` (private) |
+| Spike runs in | a demo gamedir under `evennia-world-builder/examples/` |
 | Async / reactor | sync is fine for the spike |
 | Success signal | YAML content fetched into memory; `yaml.safe_load` succeeds; both raw bytes and parsed dict are observable |
 

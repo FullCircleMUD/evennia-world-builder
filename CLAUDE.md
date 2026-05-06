@@ -4,7 +4,7 @@ Instructions for Claude (and other LLM agents) working in this repository.
 
 ## What this project is
 
-`world-builder` is a library that adds declarative, YAML-driven world authoring to [Evennia](https://www.evennia.com/). World content (rooms, exits, fixtures, descriptions) is expressed as data; an idempotent loader applies it to the running game's database via Evennia's typeclass system. Tagline: **"Your Evennia world, in YAML."**
+`evennia-world-builder` is a library that adds declarative, YAML-driven world authoring to [Evennia](https://www.evennia.com/). World content (rooms, exits, fixtures, descriptions) is expressed as data; an idempotent loader applies it to the running game's database via Evennia's typeclass system. Tagline: **"Your Evennia world, in YAML."**
 
 The library is Evennia-flavored and primarily intended for use on FullCircleMUD, but is FCM-agnostic by design: nothing in the library knows about FCM-specific zones, typeclasses, or game systems.
 
@@ -71,7 +71,7 @@ If a session catches itself writing content that goes beyond what was discussed,
 ## Repository layout
 
 ```
-world-builder/
+evennia-world-builder/
 ├── CLAUDE.md                  # this file
 ├── README.md
 ├── LICENSE                    # BSD 3-Clause
@@ -79,7 +79,7 @@ world-builder/
 ├── runtests.py                # standalone test runner (no consumer gamedir needed)
 ├── DESIGN/                    # design wiki (humans + LLMs)
 ├── src/
-│   └── world_builder/         # library code (src layout)
+│   └── evennia_world_builder/         # library code (src layout)
 │       ├── __init__.py
 │       └── tests.py           # unit tests (run via runtests.py)
 ├── tests/                     # standalone test settings (test_settings.py, urls.py)

@@ -19,7 +19,7 @@ from ..errors import (
 from .base import Reader, ReaderResult
 
 
-_USER_AGENT = "world-builder"
+_USER_AGENT = "evennia-world-builder"
 _GITHUB_API_VERSION = "2022-11-28"
 _REQUEST_TIMEOUT_SECONDS = 10
 
@@ -28,7 +28,7 @@ class GitHubReader(Reader):
     """Reader for the GitHub Contents API.
 
     Construction kwargs (all required, all keyword-only):
-        repo: owner/name slug (e.g. ``"FullCircleMUD/world-builder-test-yaml"``).
+        repo: owner/name slug (e.g. ``"FullCircleMUD/evennia-world-builder-test-yaml"``).
         ref:  branch, tag, or commit SHA.
         pat:  GitHub Personal Access Token with read access to the repo.
 

@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Settings dispatch for world-builder."""
+"""Settings dispatch for evennia-world-builder."""
 import importlib
 
 from django.conf import settings
 
 
-DEFAULT_READER = "world_builder.readers.github.GitHubReader"
+DEFAULT_READER = "evennia_world_builder.readers.github.GitHubReader"
 
 
 def get_reader_class():
     """Resolve the WORLDBUILDER_READER setting (dotted path) to a class.
 
     The setting value is a Python dotted path (e.g.
-    ``"world_builder.GitHubReader"`` or
+    ``"evennia_world_builder.GitHubReader"`` or
     ``"my_consumer.readers.MyReader"``). Defaults to
-    ``world_builder.GitHubReader``.
+    ``evennia_world_builder.GitHubReader``.
 
     Construction is the consumer's responsibility — this function
     returns the class only. Reader kwargs are reader-specific and

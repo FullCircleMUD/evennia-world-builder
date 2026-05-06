@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "world-builder"
+name = "evennia-world-builder"
 version = "0.0.1"
 description = "Declarative YAML-driven world authoring for Evennia"
 readme = "README.md"
@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-wb-validate = "world_builder.cli:_validate_main"
+wb-validate = "evennia_world_builder.cli:_validate_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["world_builder*"]
+include = ["evennia_world_builder*"]

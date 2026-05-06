@@ -1,6 +1,6 @@
 # Validation Gating
 
-How world-builder decides whether a `wb_build` invocation pre-validates the whole repo, or trusts external CI gating to have done the job already. The library never *verifies* gating; it relies on the consumer's assertion and provides clear cost/safety trade-offs for getting it wrong.
+How evennia-world-builder decides whether a `wb_build` invocation pre-validates the whole repo, or trusts external CI gating to have done the job already. The library never *verifies* gating; it relies on the consumer's assertion and provides clear cost/safety trade-offs for getting it wrong.
 
 ## The problem
 
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install world-builder
+      - run: pip install evennia-world-builder
       - run: wb-validate --reader=local --root=.
 ```
 

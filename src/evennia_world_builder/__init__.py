@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""world-builder — declarative YAML-driven world authoring for Evennia."""
+"""evennia-world-builder — declarative YAML-driven world authoring for Evennia."""
 
 from .builder import Builder
 from .config import get_configured_reader, get_reader_class

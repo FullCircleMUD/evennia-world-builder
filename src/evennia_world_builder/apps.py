@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Django AppConfig for world-builder.
+"""Django AppConfig for evennia-world-builder.
 
-When the consumer adds ``world_builder`` to ``INSTALLED_APPS``, this
-config's ``ready()`` runs and auto-installs the library's permanent
+When the consumer adds ``evennia_world_builder`` to ``INSTALLED_APPS``,
+this config's ``ready()`` runs and auto-installs the library's permanent
 admin commands into ``AccountCmdSet``. AccountCmdSet's commands are
 available OOC, and merge with ``CharacterCmdSet`` when an account
 puppets a character — so a single patch makes the commands work in
@@ -18,24 +18,24 @@ the patching happens once the lazy exports are populated.
 from django.apps import AppConfig
 
 
-class WorldBuilderConfig(AppConfig):
-    name = "world_builder"
+class EvenniaWorldBuilderConfig(AppConfig):
+    name = "evennia_world_builder"
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self):
         import evennia
 
-        if getattr(evennia, "_world_builder_init_wrapped", False):
+        if getattr(evennia, "_evennia_world_builder_init_wrapped", False):
             return
 
         _original_init = evennia._init
 
-        def _wb_wrapped_init(*args, **kwargs):
+        def _ewb_wrapped_init(*args, **kwargs):
             _original_init(*args, **kwargs)
             _install_commands()
 
-        evennia._init = _wb_wrapped_init
-        evennia._world_builder_init_wrapped = True
+        evennia._init = _ewb_wrapped_init
+        evennia._evennia_world_builder_init_wrapped = True
 
 
 def _install_commands():
@@ -50,16 +50,16 @@ def _install_commands():
     """
     from evennia.commands.default.cmdset_account import AccountCmdSet
 
-    if getattr(AccountCmdSet, "_world_builder_cmdset_patched", False):
+    if getattr(AccountCmdSet, "_evennia_world_builder_cmdset_patched", False):
         return
 
     _original_at_cmdset_creation = AccountCmdSet.at_cmdset_creation
 
-    def _wb_patched_at_cmdset_creation(self):
+    def _ewb_patched_at_cmdset_creation(self):
         _original_at_cmdset_creation(self)
         from .commands import CmdWBBuild
 
         self.add(CmdWBBuild())
 
-    AccountCmdSet.at_cmdset_creation = _wb_patched_at_cmdset_creation
-    AccountCmdSet._world_builder_cmdset_patched = True
+    AccountCmdSet.at_cmdset_creation = _ewb_patched_at_cmdset_creation
+    AccountCmdSet._evennia_world_builder_cmdset_patched = True

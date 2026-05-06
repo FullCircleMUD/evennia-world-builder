@@ -36,7 +36,7 @@ class Reader:
     ReaderResult.
 
     On failure, read() must raise one of the typed errors from
-    world_builder.errors so callers can handle each class
+    evennia_world_builder.errors so callers can handle each class
     semantically.
     """
 

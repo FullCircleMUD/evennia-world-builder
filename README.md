@@ -1,4 +1,4 @@
-# world-builder
+# evennia-world-builder
 
 Declarative YAML-driven world authoring for [Evennia](https://www.evennia.com/).
 

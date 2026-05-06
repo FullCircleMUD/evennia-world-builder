@@ -1,6 +1,6 @@
 # Discovery and Loading
 
-How world-builder finds the YAML files relevant to a build command and reads them into memory for downstream processing. Two roles, tightly coupled by a shared manifest convention but cleanly separated by responsibility:
+How evennia-world-builder finds the YAML files relevant to a build command and reads them into memory for downstream processing. Two roles, tightly coupled by a shared manifest convention but cleanly separated by responsibility:
 
 - **Finder** — walks the manifest hierarchy following an operator query, returning the entry-point location.
 - **Loader** — from that entry point, recursively reads every leaf content file via the Reader. Returns a flat list of `LoadedEntity` records.
@@ -164,7 +164,7 @@ The Loader walks each index in declared order, recursing depth-first into folder
 
 ## Examples (against the test repo)
 
-The test scaffold at `world-builder-test-yaml/` has:
+The test scaffold at `evennia-world-builder-test-yaml/` has:
 
 ```
 definitions.yaml         # levels: [zone, room]

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Test runner for world-builder.
+"""Test runner for evennia-world-builder.
 
 Runs the library's unit tests against tests/test_settings.py — no gamedir
 required. Invoke from the library root:
@@ -27,5 +27,5 @@ if __name__ == "__main__":
     from django.test.utils import get_runner
 
     runner = get_runner(settings)()
-    failures = runner.run_tests(["world_builder"])
+    failures = runner.run_tests(["evennia_world_builder"])
     sys.exit(bool(failures))
