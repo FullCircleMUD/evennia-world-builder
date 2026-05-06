@@ -1,6 +1,6 @@
 # Discovery and Loading
 
-How evennia-world-builder finds the YAML files relevant to a build command and reads them into memory for downstream processing. Two roles, tightly coupled by a shared manifest convention but cleanly separated by responsibility:
+How evennia-world-builder finds the YAML files relevant to a `wb_build` command and reads them into memory for downstream processing. Two roles, tightly coupled by a shared manifest convention but cleanly separated by responsibility:
 
 - **Finder** — walks the manifest hierarchy following an operator query, returning the entry-point location.
 - **Loader** — from that entry point, recursively reads every leaf content file via the Reader. Returns a flat list of `LoadedEntity` records.
@@ -10,7 +10,7 @@ The Validator and Builder consume the Loader's output and are documented separat
 ## Pipeline context
 
 ```
-operator: build zone=millholm room=bakery
+operator: wb_build zone=millholm room=bakery
             │
             ▼
         ┌────────┐    FoundLocation
@@ -178,12 +178,12 @@ aethenveil.yaml
 
 | Command | Finder | Loader (index order) |
 |---|---|---|
-| `build` | root, kind=folder | inn, bakery, aethenveil |
-| `build zone=millholm` | `millholm`, kind=folder | inn, bakery |
-| `build zone=aethenveil` | `aethenveil.yaml`, kind=file | aethenveil |
-| `build zone=millholm room=bakery` | `millholm/bakery.yaml`, kind=file | bakery |
-| `build zone=nonexistent` | — | `FinderQueryError` |
-| `build zone=millholm room=nonexistent` | — | `FinderQueryError` |
+| `wb_build all` | root, kind=folder | inn, bakery, aethenveil |
+| `wb_build zone=millholm` | `millholm`, kind=folder | inn, bakery |
+| `wb_build zone=aethenveil` | `aethenveil.yaml`, kind=file | aethenveil |
+| `wb_build zone=millholm room=bakery` | `millholm/bakery.yaml`, kind=file | bakery |
+| `wb_build zone=nonexistent` | — | `FinderQueryError` |
+| `wb_build zone=millholm room=nonexistent` | — | `FinderQueryError` |
 
 ## Out of scope (deferred)
 

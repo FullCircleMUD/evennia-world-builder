@@ -91,5 +91,4 @@ evennia-world-builder/
 - Python 3.10+ (pinned via `pyproject.toml`).
 - Evennia is a runtime dependency (`pip install evennia`).
 - Tests use Django's test runner via `runtests.py` (no consumer gamedir required).
-
-[TBD — YAML parser and schema validation library will be chosen as implementation begins.]
+- YAML parsing: PyYAML (`yaml.safe_load`). Schema validation: hand-written predicates in `validator.py` rather than a schema library — see [DESIGN/validator.md](DESIGN/validator.md) for the rationale.
