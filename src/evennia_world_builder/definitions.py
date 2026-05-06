@@ -32,10 +32,25 @@ class Definitions:
                 every build; True trusts the gate and skips that work.
                 The library cannot verify this assertion — see
                 DESIGN/validation-gating.md for rationale.
+        strict_attributes:
+                Scaffolded for a future feature, currently inert. The
+                planned behaviour: when True, the validator will reject
+                any YAML-declared attribute whose key isn't declared on
+                the entity's typeclass (catches typos like
+                ``loafs_avilable`` silently creating junk attributes
+                that no game logic reads).
+
+                Until the feature lands, ``from_dict()`` refuses to
+                parse ``strict-attributes: true`` — a consumer who
+                flipped it would otherwise believe attribute validation
+                was running when nothing is checked. Field stays in the
+                schema so authors can hold the YAML key in mind, but
+                only ``False`` is accepted right now.
     """
 
     levels: tuple = ()
     repo_ci_pre_validation: bool = False
+    strict_attributes: bool = False
 
     @classmethod
     def from_reader(cls, reader: Reader, path: str = _DEFINITIONS_PATH) -> "Definitions":
@@ -73,7 +88,30 @@ class Definitions:
                 f"got {type(gating).__name__}"
             )
 
-        return cls(levels=tuple(levels), repo_ci_pre_validation=gating)
+        strict_attrs = data.get("strict-attributes", False)
+        if not isinstance(strict_attrs, bool):
+            raise DefinitionsError(
+                f"{source_path}: 'strict-attributes' must be a boolean, "
+                f"got {type(strict_attrs).__name__}"
+            )
+        if strict_attrs:
+            # The setting is scaffolded but not yet functional. Refuse
+            # rather than silently accept — a consumer who flips it
+            # would otherwise believe typeclass-attribute validation
+            # was running when in reality nothing is checked.
+            raise DefinitionsError(
+                f"{source_path}: 'strict-attributes: true' is not yet "
+                "implemented (it's scaffolded for a planned future "
+                "feature). Set it back to false. The library will start "
+                "honouring true once typeclass-attribute introspection "
+                "lands; until then, accepting true would be misleading."
+            )
+
+        return cls(
+            levels=tuple(levels),
+            repo_ci_pre_validation=gating,
+            strict_attributes=strict_attrs,
+        )
 
     def validate_query(self, query: dict) -> None:
         """Validate a query against the declared levels.

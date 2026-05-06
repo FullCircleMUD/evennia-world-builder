@@ -203,6 +203,63 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
+def _check_attributes_field_shape(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``attributes:`` (when present) is a list of well-shaped records.
+
+    Each entry must be a mapping with ``key`` (non-empty string),
+    ``value`` (any type — string, int, float, bool, null, list, dict),
+    and an optional ``category`` (string when present).
+
+    The Builder writes each entry via
+    ``obj.attributes.add(key, value, category=category)``. Evennia
+    accepts arbitrary serialisable values, so we don't constrain
+    ``value`` here — that's deliberately Evennia's call, not ours.
+
+    Note: ``value`` must be *present* (the YAML key must be there) but
+    its content can be ``null`` — that's a legitimate value (sets the
+    attribute to None). Missing the ``value`` key entirely is a refusal
+    because a half-declared attribute is almost certainly an author
+    typo.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "attributes" not in content:
+        return None
+
+    attributes = content["attributes"]
+    if not isinstance(attributes, list):
+        return (
+            f"{entity.path}: 'attributes' must be a list, "
+            f"got {type(attributes).__name__}"
+        )
+
+    for index, attr in enumerate(attributes):
+        prefix = f"{entity.path}: attributes[{index}]"
+
+        if not isinstance(attr, dict):
+            return (
+                f"{prefix}: must be a mapping, got {type(attr).__name__}"
+            )
+
+        if "key" not in attr:
+            return f"{prefix}: missing 'key'"
+        key = attr["key"]
+        if not isinstance(key, str) or not key.strip():
+            return f"{prefix}: 'key' must be a non-empty string"
+
+        if "value" not in attr:
+            return f"{prefix} ({key!r}): missing 'value'"
+
+        if "category" in attr:
+            category = attr["category"]
+            if not isinstance(category, str):
+                return (
+                    f"{prefix} ({key!r}): 'category' must be a string, "
+                    f"got {type(category).__name__}"
+                )
+
+    return None
+
+
 def _check_locks_field_shape(entity: LoadedEntity) -> str | None:
     """Tier 1: ``locks:`` (when present) is a non-empty string.
 
@@ -381,6 +438,7 @@ class Validator:
         _check_description_field_shape,
         _check_aliases_field_shape,
         _check_locks_field_shape,
+        _check_attributes_field_shape,
         _check_tags_field_shape,
         _check_tags_no_reserved_category,
     )

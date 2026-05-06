@@ -323,6 +323,33 @@ class DefinitionsTest(TestCase):
                 "repo-ci-pre-validation": "true",  # string, not bool
             })
 
+    def test_strict_attributes_defaults_false(self):
+        self.assertFalse(Definitions.from_dict({"levels": ["zone"]}).strict_attributes)
+
+    def test_strict_attributes_true_refused_until_implemented(self):
+        # Feature isn't shipped yet — accepting True would mislead
+        # consumers into thinking validation was running. Refuse early.
+        with self.assertRaises(DefinitionsError) as ctx:
+            Definitions.from_dict({
+                "levels": ["zone"],
+                "strict-attributes": True,
+            })
+        self.assertIn("not yet implemented", str(ctx.exception))
+
+    def test_strict_attributes_explicit_false(self):
+        d = Definitions.from_dict({
+            "levels": ["zone"],
+            "strict-attributes": False,
+        })
+        self.assertFalse(d.strict_attributes)
+
+    def test_strict_attributes_must_be_bool(self):
+        with self.assertRaises(DefinitionsError):
+            Definitions.from_dict({
+                "levels": ["zone"],
+                "strict-attributes": "true",  # string, not bool
+            })
+
     def test_validate_query_empty_is_valid(self):
         Definitions(levels=("zone", "room")).validate_query({})
 
@@ -959,6 +986,122 @@ class ValidatorLocationWellFormedTest(TestCase):
         self.assertNotIn(
             _check_location_well_formed, Validator.PER_ENTITY_PREDICATES
         )
+
+
+class ValidatorAttributesFieldShapeTest(TestCase):
+    """Tier 1 — attributes is optional; list of {key, value, category?} dicts."""
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    # --- pass cases ---------------------------------------------------
+
+    def test_no_attributes_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_attributes_list_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"attributes": []})])
+        self.assertEqual(v.errors, [])
+
+    def test_minimal_attribute_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"attributes": [
+            {"key": "ambient_smell", "value": "fresh bread"}
+        ]})])
+        self.assertEqual(v.errors, [])
+
+    def test_attribute_with_category_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"attributes": [
+            {"key": "noise_level", "value": "quiet", "category": "ambient"}
+        ]})])
+        self.assertEqual(v.errors, [])
+
+    def test_arbitrary_value_types_pass(self):
+        # value can be string, int, float, bool, null, list, dict — any
+        # YAML scalar/composite. The Builder/Evennia handle storage.
+        v = self._validator()
+        v.validate([self._entity({"attributes": [
+            {"key": "as_string", "value": "x"},
+            {"key": "as_int", "value": 42},
+            {"key": "as_float", "value": 3.14},
+            {"key": "as_bool", "value": True},
+            {"key": "as_null", "value": None},
+            {"key": "as_list", "value": [1, 2, 3]},
+            {"key": "as_dict", "value": {"a": 1, "b": [2, 3]}},
+        ]})])
+        self.assertEqual(v.errors, [])
+
+    # --- fail cases ---------------------------------------------------
+
+    def test_attributes_not_a_list_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": {"key": "x", "value": "y"}})])
+        self.assertTrue(any("'attributes' must be a list" in e for e in v.errors))
+
+    def test_non_mapping_entry_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": ["bare_string"]})])
+        self.assertTrue(any("attributes[0]" in e and "must be a mapping" in e for e in v.errors))
+
+    def test_missing_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": [{"value": "y"}]})])
+        self.assertTrue(any("attributes[0]: missing 'key'" in e for e in v.errors))
+
+    def test_empty_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": [{"key": "", "value": "y"}]})])
+        self.assertTrue(any("'key' must be a non-empty string" in e for e in v.errors))
+
+    def test_non_string_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": [{"key": 42, "value": "y"}]})])
+        self.assertTrue(any("'key' must be a non-empty string" in e for e in v.errors))
+
+    def test_missing_value_rejected(self):
+        # Half-declared attribute (key but no value field) is almost
+        # certainly an author typo — don't silently default to None.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": [{"key": "x"}]})])
+        self.assertTrue(any("missing 'value'" in e for e in v.errors))
+
+    def test_explicit_null_value_passes(self):
+        # Explicit null IS a value (sets the attribute to None). Only
+        # absence of the value key is rejected.
+        v = self._validator()
+        v.validate([self._entity({"attributes": [{"key": "x", "value": None}]})])
+        self.assertEqual(v.errors, [])
+
+    def test_non_string_category_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"attributes": [
+                {"key": "x", "value": "y", "category": 42}
+            ]})])
+        self.assertTrue(any("'category' must be a string" in e for e in v.errors))
 
 
 class ValidatorLocksFieldShapeTest(TestCase):

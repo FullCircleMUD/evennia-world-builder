@@ -107,6 +107,7 @@ Same Validator, two output channels.
 | 1 — Stateless | every entity | `_check_description_field_shape` | `description` (optional) present but not a string |
 | 1 — Stateless | every entity | `_check_aliases_field_shape` | `aliases` (optional) not a list, or items not non-empty strings |
 | 1 — Stateless | every entity | `_check_locks_field_shape` | `locks` (optional) not a non-empty string |
+| 1 — Stateless | every entity | `_check_attributes_field_shape` | `attributes` (optional) not a list, item not a mapping, missing/empty/non-string `key`, missing `value`, or non-string `category` |
 | 1 — Stateless | every entity | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
 | 1 — Stateless | every entity | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
 | 1 — Stateless | **top-level only** | `_check_location_well_formed` | field missing, or non-null (cross-ref dict support deferred to spike 4) |

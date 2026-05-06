@@ -120,6 +120,13 @@ class Builder:
                 ) from e
 
             try:
+                self._apply_attributes(obj, entity)
+            except Exception as e:
+                raise BuilderError(
+                    f"failed to apply attributes for {entity.path!r}: {e}"
+                ) from e
+
+            try:
                 self._apply_tags(obj, entity)
             except Exception as e:
                 raise BuilderError(
@@ -192,6 +199,30 @@ class Builder:
         if lockstring is None:
             return
         obj.locks.add(lockstring)
+
+    def _apply_attributes(self, obj, entity: LoadedEntity) -> None:
+        """Apply each attribute from ``content['attributes']`` to the object.
+
+        Each entry has the shape ``{"key": str, "value": Any,
+        "category": str?}``. The Builder writes via
+        ``obj.attributes.add(key, value, category=category)`` — Evennia's
+        attribute store handles arbitrary serialisable Python values,
+        and stores ``category=None`` (default category) when the YAML
+        omits it.
+
+        YAML attributes overwrite anything the typeclass set during
+        ``at_object_creation`` (since this method runs AFTER
+        ``create_object``). That's the contract: typeclass declares
+        defaults; YAML overrides per-instance.
+
+        The validator's ``_check_attributes_field_shape`` predicate has
+        already guaranteed shape, so this trusts it.
+        """
+        content = entity.content if isinstance(entity.content, dict) else {}
+        for attr in content.get("attributes", []):
+            obj.attributes.add(
+                attr["key"], attr["value"], category=attr.get("category"),
+            )
 
     def _apply_tags(self, obj, entity: LoadedEntity) -> None:
         """Apply author-supplied tags + the auto-set deployment pair.

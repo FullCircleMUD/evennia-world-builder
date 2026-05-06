@@ -6,6 +6,7 @@ Rooms are simple containers that has no location of their own.
 """
 
 from evennia.objects.objects import DefaultRoom
+from evennia.typeclasses.attributes import AttributeProperty
 
 from .objects import ObjectParent
 
@@ -28,15 +29,23 @@ class BakeryRoom(DefaultRoom):
     """Minimal custom-typeclass smoke target for evennia-world-builder.
 
     Inherits directly from DefaultRoom (skipping the gamedir's empty
-    `Room` base class) to keep the smoke focused: one extra attribute
-    set at creation time. Proves that a YAML-declared
-    `typeclass: typeclasses.rooms.BakeryRoom` lands as the actual
-    Python class on the created object and class-defined behaviour
-    fires correctly.
+    `Room` base class) to keep the smoke focused. Demonstrates the two
+    canonical Evennia patterns for class-declared default attributes,
+    so the YAML attributes-override story can be exercised against
+    each:
+
+    - ``room_type`` and ``loaves_available`` are set imperatively in
+      ``at_object_creation``. The Builder's ``create_object`` call
+      triggers this once; later YAML attribute writes then override.
+    - ``num_widgets`` uses ``AttributeProperty``, the modern descriptor
+      that lazily backs to ``db.num_widgets`` with a default value.
 
     Deliberately trivial. Not a model for real game typeclasses.
     """
 
+    num_widgets = AttributeProperty(5)
+
     def at_object_creation(self):
         super().at_object_creation()
         self.db.room_type = "bakery"
+        self.db.loaves_available = 10
