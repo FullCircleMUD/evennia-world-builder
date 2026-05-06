@@ -150,6 +150,59 @@ def _check_tags_no_reserved_category(entity: LoadedEntity) -> str | None:
     return None
 
 
+def _check_name_well_formed(entity: LoadedEntity) -> str | None:
+    """Tier 1: every entity must declare ``name`` as a non-empty string.
+
+    The Builder uses ``name`` as the Evennia object's ``key`` — what
+    players see. No fallback to the source path because that would
+    produce keys like ``millholm/bakery.yaml``, which is operator
+    debug output leaking into player-visible content.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+
+    if "name" not in content:
+        return f"{entity.path}: missing required field 'name'"
+
+    value = content["name"]
+    if not isinstance(value, str):
+        return (
+            f"{entity.path}: 'name' must be a string, "
+            f"got {type(value).__name__}"
+        )
+    if not value.strip():
+        return f"{entity.path}: 'name' must be a non-empty string"
+    return None
+
+
+def _check_location_well_formed(entity: LoadedEntity) -> str | None:
+    """Tier 1: every entity must declare ``location`` explicitly.
+
+    For spike 1 only ``location: null`` is supported (orphan placement —
+    rooms have no location, which is the dominant case). The Builder
+    can't yet resolve cross-ref dicts pointing at a parent object.
+
+    Why mandate the field even when the only valid value is null?
+    Without an explicit declaration, an author who forgets the field
+    can't tell whether they meant "orphan" or "should have had a
+    parent and forgot." Once recursion lands (spike 2), nested
+    entities will get their location from their YAML position, but
+    top-level entities still need this — there's no structural signal
+    for "is this a placement or an orphan."
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+
+    if "location" not in content:
+        return f"{entity.path}: missing required field 'location'"
+
+    value = content["location"]
+    if value is not None:
+        return (
+            f"{entity.path}: 'location' must be null (spike 1 supports "
+            f"orphan placement only); got {type(value).__name__}"
+        )
+    return None
+
+
 def _check_typeclass_well_formed(entity: LoadedEntity) -> str | None:
     """Tier 1: every entity must declare ``typeclass`` as a non-empty string.
 
@@ -239,11 +292,28 @@ class Validator:
                   cross-reference resolution.
     """
 
+    # Stateless predicates that fire on every entity, top-level or nested.
+    # Nested entities (items inside `contents:` / `exits:`) inherit position
+    # from their parent's YAML structure, so anything purely about the
+    # entity itself — id, name, typeclass, tags — applies uniformly.
     PER_ENTITY_PREDICATES = (
         _check_deployment_id_well_formed,
+        _check_name_well_formed,
         _check_typeclass_well_formed,
         _check_tags_field_shape,
         _check_tags_no_reserved_category,
+    )
+
+    # Stateless predicates that fire only on top-level entities. Today every
+    # entity loaded by the Loader is top-level, so the validator's loop runs
+    # these on everything; when recursion lands (spike 2) and the Loader
+    # starts producing nested entities, the loop will distinguish via a
+    # LoadedEntity flag and skip these for nested ones — a nested entity's
+    # location is the YAML structure that nests it, so the field must NOT
+    # appear on nested entities (to be enforced by a separate predicate
+    # added at that time).
+    TOP_LEVEL_PREDICATES = (
+        _check_location_well_formed,
     )
 
     EVENNIA_ONLY_PREDICATES = (
@@ -291,12 +361,17 @@ class Validator:
     def _active_predicates(self) -> tuple:
         """The predicate tuple appropriate for the current caller context.
 
-        Tier 1 always runs; Tier 3 (Evennia-runtime) opts in via
-        ``evennia_runtime=True`` at construction.
+        Tier 1 always runs (PER_ENTITY_PREDICATES + TOP_LEVEL_PREDICATES);
+        Tier 3 (Evennia-runtime) opts in via ``evennia_runtime=True``.
+
+        Today every entity is top-level (recursion lands in spike 2), so
+        TOP_LEVEL_PREDICATES applies uniformly; once nested entities exist,
+        callers will route nested ones through a path that omits this set.
         """
+        active = self.PER_ENTITY_PREDICATES + self.TOP_LEVEL_PREDICATES
         if self.evennia_runtime:
-            return self.PER_ENTITY_PREDICATES + self.EVENNIA_ONLY_PREDICATES
-        return self.PER_ENTITY_PREDICATES
+            active = active + self.EVENNIA_ONLY_PREDICATES
+        return active
 
     def _run_stateless_predicates(self, entity: LoadedEntity) -> bool:
         """Run every active predicate against entity. Return True if all pass."""

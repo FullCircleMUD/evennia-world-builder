@@ -99,16 +99,40 @@ Same Validator, two output channels.
 
 ## Currently shipped checks
 
-| Tier | Name | Failure |
-|---|---|---|
-| 1 — Stateless | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
-| 1 — Stateless | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
-| 1 — Stateless | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
-| 1 — Stateless | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
-| 2 — Stateful | `_check_and_record_unique_id` | `deployment_id` already declared in the same file |
-| 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
+| Tier | Scope | Name | Failure |
+|---|---|---|---|
+| 1 — Stateless | every entity | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
+| 1 — Stateless | every entity | `_check_name_well_formed` | field missing, not a string, or empty/whitespace |
+| 1 — Stateless | every entity | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
+| 1 — Stateless | every entity | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
+| 1 — Stateless | every entity | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
+| 1 — Stateless | **top-level only** | `_check_location_well_formed` | field missing, or non-null (cross-ref dict support deferred to spike 4) |
+| 2 — Stateful | every entity | `_check_and_record_unique_id` | `deployment_id` already declared in the same file |
+| 3 — Evennia-runtime | every entity | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
 
-**Mandatory fields**: every entity must declare both `deployment_id` (non-negative integer) and `typeclass` (non-empty string). No defaults, no fallbacks — explicit declarations only. The Builder relies on the validator's guarantees to skip its own shape checks.
+### Top-level vs nested scope
+
+Some predicates run on every entity (top-level *and* nested-inside-`contents:`/`exits:`); others apply only to top-level entities, where YAML structure doesn't itself declare position.
+
+`_check_location_well_formed` is the first of the latter kind. A nested entity's location is implicit in the YAML structure that nests it, so requiring `location:` on those would force redundant declarations; conversely, a top-level entity has no structural signal, so explicit `location:` is what disambiguates orphan rooms from accidentally-orphaned objects the author meant to place somewhere.
+
+The Validator stores these in two tuples:
+
+- `PER_ENTITY_PREDICATES` — runs on every entity.
+- `TOP_LEVEL_PREDICATES` — runs only on top-level entities. Today every entity is top-level (recursion lands in spike 2), so the loop runs both uniformly; once nested entities exist, the validator's iteration will distinguish via a `LoadedEntity` flag and skip `TOP_LEVEL_PREDICATES` for nested ones.
+
+When recursion lands, a sibling predicate (refusing `location:` *on* nested entities) joins the picture, since author-set location on a nested entity would conflict with the implicit nesting declaration.
+
+### Mandatory fields
+
+Every entity must declare:
+
+- `deployment_id` — non-negative integer
+- `name` — non-empty string
+- `typeclass` — non-empty string
+- `location` — explicit (currently `null` only) — *top-level entities only*
+
+No defaults, no fallbacks. The Builder relies on the validator's guarantees to skip its own shape checks.
 
 ## Cross-reference resolution (Tier 4, planned)
 

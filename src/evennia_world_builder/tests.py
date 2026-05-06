@@ -82,18 +82,21 @@ SCAFFOLD = {
         "deployment_id": 1,
         "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "Sanctum",
+        "location": None,
         "description": "A circular chamber.",
     },
     "millholm/inn.yaml": {
         "deployment_id": 1,
         "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "The Crooked Lantern",
+        "location": None,
         "description": "Warmly lit.",
     },
     "millholm/bakery.yaml": {
         "deployment_id": 2,
         "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "Goldencrust",
+        "location": None,
         "description": "Smells of bread.",
     },
 }
@@ -563,6 +566,7 @@ class LoaderTest(TestCase):
             "deployment_id": 1,
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "The Crooked Lantern",
+            "location": None,
             "description": "Warmly lit.",
         })
 
@@ -595,11 +599,19 @@ class ValidatorTest(TestCase):
     """Verify Validator's per-entity predicates and per-file id index."""
 
     def _entity(self, path: str, content) -> LoadedEntity:
-        # Inject a default typeclass when the test didn't supply one — Tier 1
-        # makes typeclass mandatory now, so otherwise every test would have to
-        # repeat it just to keep the unrelated Tier 1 checks from firing.
-        if isinstance(content, dict) and "typeclass" not in content:
-            content = {**content, "typeclass": "evennia.objects.objects.DefaultRoom"}
+        # Inject mandatory Tier 1 fields when the test didn't supply them.
+        # Tests that specifically exercise a missing-field predicate set
+        # the field directly and the relevant default below is overridden
+        # via {**defaults, **content}.
+        if isinstance(content, dict):
+            defaults = {
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default_value in defaults.items():
+                if key not in content:
+                    content = {**content, key: default_value}
         return LoadedEntity(location={}, content=content, path=path)
 
     def _valid(self, path: str, deployment_id: int) -> LoadedEntity:
@@ -607,6 +619,7 @@ class ValidatorTest(TestCase):
             "deployment_id": deployment_id,
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "x",
+            "location": None,
         })
 
     def _validator(self):
@@ -737,6 +750,12 @@ class ValidatorTypeclassResolvableTest(TestCase):
     """Tier 3 — verify _check_typeclass_resolvable gating + behaviour."""
 
     def _entity(self, path: str, content) -> LoadedEntity:
+        # Auto-inject the other mandatory Tier 1 fields so these tests
+        # only exercise the typeclass-resolvable predicate.
+        if isinstance(content, dict):
+            for key, default in (("name", "x"), ("location", None)):
+                if key not in content:
+                    content = {**content, key: default}
         return LoadedEntity(location={}, content=content, path=path)
 
     def _entity_with_typeclass(self, typeclass) -> LoadedEntity:
@@ -790,6 +809,12 @@ class ValidatorTypeclassWellFormedTest(TestCase):
     """Tier 1 — typeclass is mandatory, must be a non-empty string."""
 
     def _entity(self, content) -> LoadedEntity:
+        # Auto-inject the other mandatory Tier 1 fields so these tests
+        # only exercise the typeclass-well-formed predicate.
+        if isinstance(content, dict):
+            for key, default in (("name", "x"), ("location", None)):
+                if key not in content:
+                    content = {**content, key: default}
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
@@ -828,12 +853,122 @@ class ValidatorTypeclassWellFormedTest(TestCase):
         self.assertEqual(v.errors, [])
 
 
+class ValidatorNameWellFormedTest(TestCase):
+    """Tier 1 — name is mandatory, must be a non-empty string."""
+
+    def _entity(self, content) -> LoadedEntity:
+        # Auto-inject the other mandatory Tier 1 fields except name.
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_missing_name_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({})])
+        self.assertTrue(any("missing required field 'name'" in e for e in v.errors))
+
+    def test_non_string_name_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"name": 42})])
+        self.assertTrue(any("'name' must be a string" in e for e in v.errors))
+
+    def test_empty_string_name_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"name": ""})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+    def test_whitespace_only_name_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"name": "   "})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+    def test_well_formed_name_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"name": "Goldencrust Bakery"})])
+        self.assertEqual(v.errors, [])
+
+
+class ValidatorLocationWellFormedTest(TestCase):
+    """Tier 1 (top-level only) — location is mandatory; must be null today."""
+
+    def _entity(self, content) -> LoadedEntity:
+        # Auto-inject the other mandatory Tier 1 fields except location.
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_missing_location_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({})])
+        self.assertTrue(any("missing required field 'location'" in e for e in v.errors))
+
+    def test_explicit_null_location_passes(self):
+        # `location: null` is the orphan-room declaration. Mandated by
+        # the predicate to make orphan placement explicit, not implicit.
+        v = self._validator()
+        v.validate([self._entity({"location": None})])
+        self.assertEqual(v.errors, [])
+
+    def test_string_location_rejected_today(self):
+        # Cross-ref dicts and other non-null values are deferred to
+        # spike 4 — for now anything other than null is refused.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": "somewhere"})])
+        self.assertTrue(any("'location' must be null" in e for e in v.errors))
+
+    def test_dict_location_rejected_today(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {"deployment_id": 5}})])
+        self.assertTrue(any("'location' must be null" in e for e in v.errors))
+
+    def test_top_level_predicates_registered_separately(self):
+        # The location predicate must live in TOP_LEVEL_PREDICATES, not
+        # PER_ENTITY_PREDICATES — when recursion lands, nested entities
+        # need to skip it. Guard this architectural split with a test.
+        from evennia_world_builder.validator import _check_location_well_formed
+        self.assertIn(
+            _check_location_well_formed, Validator.TOP_LEVEL_PREDICATES
+        )
+        self.assertNotIn(
+            _check_location_well_formed, Validator.PER_ENTITY_PREDICATES
+        )
+
+
 class ValidatorTagsShapeTest(TestCase):
     """Tier 1 — verify _check_tags_field_shape on the tags field."""
 
     _BASE = {
         "deployment_id": 1,
         "typeclass": "evennia.objects.objects.DefaultRoom",
+        "name": "x",
+        "location": None,
     }
 
     def _entity(self, tags) -> LoadedEntity:
@@ -934,6 +1069,8 @@ class ValidatorTagsReservedCategoryTest(TestCase):
             content={
                 "deployment_id": 1,
                 "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
                 "tags": tags,
             },
             path="a.yaml",

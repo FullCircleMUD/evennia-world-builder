@@ -57,13 +57,18 @@ class Builder:
 
         Step 2: for each entity, create one Evennia object:
 
-        - ``content["name"]`` becomes the object's ``key`` (falls back
-          to ``entity.path``).
-        - ``content["description"]`` becomes ``db.desc`` (default "").
-        - ``content["typeclass"]`` selects the typeclass; mandatory
-          field — the validator's Tier 1 predicate guarantees presence
-          and non-empty-string shape, and Tier 3 (under
+        Validator's Tier 1 predicates guarantee these mandatory fields
+        are present and well-shaped:
+
+        - ``content["name"]`` becomes the object's ``key``.
+        - ``content["location"]`` becomes the object's ``location``
+          (currently must be ``null``; cross-ref dicts land in spike 4).
+        - ``content["typeclass"]`` selects the typeclass; Tier 3 (under
           ``evennia_runtime=True``) verifies resolvability.
+
+        And these optional fields:
+
+        - ``content["description"]`` becomes ``db.desc`` (default "").
         - ``content["tags"]`` is normalised and applied; the load-bearing
           ``wb_deployment_file`` / ``wb_deployment_id`` pair is appended
           automatically.
@@ -82,14 +87,17 @@ class Builder:
         created = []
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
-            key = content.get("name") or entity.path
+            # Validator's Tier 1 predicates guarantee these fields are present.
+            key = content["name"]
+            location = content["location"]
+            typeclass = content["typeclass"]
             desc = content.get("description", "")
-            typeclass = content["typeclass"]  # validator guarantees presence
 
             try:
                 obj = create_object(
                     typeclass=typeclass,
                     key=key,
+                    location=location,
                     attributes=[("desc", desc)],
                 )
             except Exception as e:
