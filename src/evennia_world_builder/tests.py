@@ -80,16 +80,19 @@ SCAFFOLD = {
     ]},
     "aethenveil.yaml": {
         "deployment_id": 1,
+        "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "Sanctum",
         "description": "A circular chamber.",
     },
     "millholm/inn.yaml": {
         "deployment_id": 1,
+        "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "The Crooked Lantern",
         "description": "Warmly lit.",
     },
     "millholm/bakery.yaml": {
         "deployment_id": 2,
+        "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "Goldencrust",
         "description": "Smells of bread.",
     },
@@ -558,6 +561,7 @@ class LoaderTest(TestCase):
         entities = loader.load(finder.find({"zone": "millholm", "room": "inn"}))
         self.assertEqual(entities[0].content, {
             "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "The Crooked Lantern",
             "description": "Warmly lit.",
         })
@@ -591,10 +595,19 @@ class ValidatorTest(TestCase):
     """Verify Validator's per-entity predicates and per-file id index."""
 
     def _entity(self, path: str, content) -> LoadedEntity:
+        # Inject a default typeclass when the test didn't supply one — Tier 1
+        # makes typeclass mandatory now, so otherwise every test would have to
+        # repeat it just to keep the unrelated Tier 1 checks from firing.
+        if isinstance(content, dict) and "typeclass" not in content:
+            content = {**content, "typeclass": "evennia.objects.objects.DefaultRoom"}
         return LoadedEntity(location={}, content=content, path=path)
 
     def _valid(self, path: str, deployment_id: int) -> LoadedEntity:
-        return self._entity(path, {"deployment_id": deployment_id, "name": "x"})
+        return self._entity(path, {
+            "deployment_id": deployment_id,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "x",
+        })
 
     def _validator(self):
         return Validator(Definitions(levels=("zone", "room")))
@@ -718,3 +731,256 @@ class ValidatorTest(TestCase):
         self.assertEqual(len(v.errors), 2)
         self.assertTrue(any("a.yaml" in e and "missing" in e for e in v.errors))
         self.assertTrue(any("b.yaml" in e and "non-negative" in e for e in v.errors))
+
+
+class ValidatorTypeclassResolvableTest(TestCase):
+    """Tier 3 — verify _check_typeclass_resolvable gating + behaviour."""
+
+    def _entity(self, path: str, content) -> LoadedEntity:
+        return LoadedEntity(location={}, content=content, path=path)
+
+    def _entity_with_typeclass(self, typeclass) -> LoadedEntity:
+        return self._entity("a.yaml", {"deployment_id": 1, "typeclass": typeclass})
+
+    def _defs(self):
+        return Definitions(levels=("zone",))
+
+    # --- gating: predicate runs only when evennia_runtime=True --------
+
+    def test_evennia_runtime_defaults_false(self):
+        self.assertFalse(Validator(self._defs()).evennia_runtime)
+
+    def test_default_off_skips_typeclass_check(self):
+        # Bogus typeclass — would fail Tier 3, but Tier 3 doesn't run.
+        v = Validator(self._defs())
+        v.validate([self._entity_with_typeclass("nonexistent.module.NopeClass")])
+        self.assertEqual(v.errors, [])
+
+    def test_evennia_runtime_true_runs_typeclass_check(self):
+        v = Validator(self._defs(), evennia_runtime=True)
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity_with_typeclass("nonexistent.module.NopeClass")])
+        self.assertTrue(any("could not be imported" in e for e in v.errors))
+
+    # --- per-case behaviour (only relevant under evennia_runtime=True)
+
+    def test_typeclass_no_dot_flagged(self):
+        v = Validator(self._defs(), evennia_runtime=True)
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity_with_typeclass("NopeClass")])
+        self.assertTrue(any("not a dotted path" in e for e in v.errors))
+
+    def test_typeclass_module_loaded_class_missing(self):
+        # `os` is reliably importable; `NotARealClass` definitely isn't on it.
+        v = Validator(self._defs(), evennia_runtime=True)
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity_with_typeclass("os.NotARealClass")])
+        msg = " ".join(v.errors)
+        self.assertIn("loaded but class", msg)
+        self.assertIn("'NotARealClass'", msg)
+
+    def test_typeclass_resolvable_passes(self):
+        # `os.PathLike` is a real, importable, public name.
+        v = Validator(self._defs(), evennia_runtime=True)
+        v.validate([self._entity_with_typeclass("os.PathLike")])
+        self.assertEqual(v.errors, [])
+
+
+class ValidatorTypeclassWellFormedTest(TestCase):
+    """Tier 1 — typeclass is mandatory, must be a non-empty string."""
+
+    def _entity(self, content) -> LoadedEntity:
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_missing_typeclass_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"deployment_id": 1})])
+        self.assertTrue(any("missing required field 'typeclass'" in e for e in v.errors))
+
+    def test_non_string_typeclass_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"deployment_id": 1, "typeclass": 42})])
+        self.assertTrue(any("'typeclass' must be a string" in e for e in v.errors))
+
+    def test_empty_string_typeclass_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"deployment_id": 1, "typeclass": ""})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+    def test_whitespace_only_typeclass_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"deployment_id": 1, "typeclass": "   "})])
+        self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
+
+    def test_well_formed_typeclass_passes(self):
+        v = self._validator()
+        v.validate([self._entity({
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+        })])
+        self.assertEqual(v.errors, [])
+
+
+class ValidatorTagsShapeTest(TestCase):
+    """Tier 1 — verify _check_tags_field_shape on the tags field."""
+
+    _BASE = {
+        "deployment_id": 1,
+        "typeclass": "evennia.objects.objects.DefaultRoom",
+    }
+
+    def _entity(self, tags) -> LoadedEntity:
+        return LoadedEntity(
+            location={},
+            content={**self._BASE, "tags": tags},
+            path="a.yaml",
+        )
+
+    def _entity_no_tags(self) -> LoadedEntity:
+        return LoadedEntity(
+            location={}, content=dict(self._BASE), path="a.yaml"
+        )
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_no_tags_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity_no_tags()])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_tag_list_passes(self):
+        v = self._validator()
+        v.validate([self._entity([])])
+        self.assertEqual(v.errors, [])
+
+    def test_string_tags_pass(self):
+        v = self._validator()
+        v.validate([self._entity(["bakery", "commerce"])])
+        self.assertEqual(v.errors, [])
+
+    def test_dict_tags_pass(self):
+        v = self._validator()
+        v.validate([self._entity([{"key": "indoor", "category": "environment"}])])
+        self.assertEqual(v.errors, [])
+
+    def test_dict_tag_without_category_passes(self):
+        # Default category is permitted; category is optional in the dict form.
+        v = self._validator()
+        v.validate([self._entity([{"key": "fixture"}])])
+        self.assertEqual(v.errors, [])
+
+    def test_mixed_string_and_dict_pass(self):
+        v = self._validator()
+        v.validate([self._entity(["bakery", {"key": "indoor", "category": "environment"}])])
+        self.assertEqual(v.errors, [])
+
+    def test_tags_not_a_list_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity("bakery")])
+        self.assertTrue(any("'tags' must be a list" in e for e in v.errors))
+
+    def test_empty_string_tag_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(["bakery", ""])])
+        self.assertTrue(any("non-empty string" in e for e in v.errors))
+
+    def test_int_tag_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([42])])
+        self.assertTrue(any("must be a string or a mapping" in e for e in v.errors))
+
+    def test_dict_tag_missing_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([{"category": "environment"}])])
+        self.assertTrue(any("must include 'key'" in e for e in v.errors))
+
+    def test_dict_tag_empty_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([{"key": "", "category": "x"}])])
+        self.assertTrue(any("'key' must be a non-empty string" in e for e in v.errors))
+
+    def test_dict_tag_non_string_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([{"key": 42}])])
+        self.assertTrue(any("'key' must be a non-empty string" in e for e in v.errors))
+
+    def test_dict_tag_non_string_category_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([{"key": "x", "category": 42}])])
+        self.assertTrue(any("'category' must be a string" in e for e in v.errors))
+
+
+class ValidatorTagsReservedCategoryTest(TestCase):
+    """Tier 1 — verify _check_tags_no_reserved_category guards wb_ prefix."""
+
+    def _entity(self, tags) -> LoadedEntity:
+        return LoadedEntity(
+            location={},
+            content={
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "tags": tags,
+            },
+            path="a.yaml",
+        )
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_non_reserved_category_passes(self):
+        v = self._validator()
+        v.validate([self._entity([{"key": "x", "category": "environment"}])])
+        self.assertEqual(v.errors, [])
+
+    def test_wb_deployment_file_category_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([
+                {"key": "millholm/x.yaml", "category": "wb_deployment_file"}
+            ])])
+        self.assertTrue(any("reserved for the library" in e for e in v.errors))
+        self.assertTrue(any("wb_deployment_file" in e for e in v.errors))
+
+    def test_wb_deployment_id_category_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([
+                {"key": "1", "category": "wb_deployment_id"}
+            ])])
+        self.assertTrue(any("reserved for the library" in e for e in v.errors))
+
+    def test_wb_anything_category_rejected(self):
+        # The whole wb_ prefix is reserved, not just the two current categories.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity([
+                {"key": "x", "category": "wb_future_thing"}
+            ])])
+        self.assertTrue(any("reserved for the library" in e for e in v.errors))
+
+    def test_string_tags_unaffected(self):
+        # Shorthand tags don't carry a category and can't trip this predicate.
+        v = self._validator()
+        v.validate([self._entity(["wb_deployment_file"])])  # legal as a tag KEY
+        self.assertEqual(v.errors, [])
+
+    def test_default_category_unaffected(self):
+        # Dict tag without a category falls back to default — can't be reserved.
+        v = self._validator()
+        v.validate([self._entity([{"key": "wb_deployment_file"}])])
+        self.assertEqual(v.errors, [])

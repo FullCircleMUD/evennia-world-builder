@@ -1,21 +1,32 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Builder — creates Evennia objects from validated LoadedEntities.
 
-v0 is the minimum viable end-to-end: for each entity, create a single
-Evennia object using the entity's ``content`` to populate ``key`` and
-``db.desc``, with an optional ``typeclass`` override. No idempotency —
-running the builder twice creates duplicates. No exits, no fixtures, no
-attributes beyond ``desc``.
+Cleanup-on-rebuild model (see DESIGN/deployment-identity.md):
 
-This is deliberate. We ship the smallest thing that proves end-to-end
-"YAML → Evennia object in the DB" works, then discover what's missing
-by running it against real content.
+- Every object the Builder creates is tagged with
+  ``wb_deployment_file=<entity.path>`` and ``wb_deployment_id=<id>``.
+- At the start of every ``build()`` call, the Builder sweeps every
+  existing object tagged with any of the source files in the current
+  build and deletes them.
+- The build then creates fresh objects from the YAML.
+
+Same YAML applied N times produces the same end state. Idempotency
+emerges from "delete-everything-tagged-as-from-this-file, then build
+it" — no diff machinery, no reconcile.
+
+Per-entity construction currently lands typeclass + key + db.desc +
+tags. Aliases, locks, attributes, exits, contents are upcoming spikes.
 """
 from .definitions import Definitions
 from .errors import BuilderError
+from .loader import LoadedEntity
 
 
-_DEFAULT_TYPECLASS = "evennia.objects.objects.DefaultRoom"
+# Tag categories the Builder sets automatically. Keep in sync with the
+# reserved-prefix check in validator.py — author-supplied tags using
+# these categories are rejected at validate time.
+_TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
+_TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 
 
 class Builder:
@@ -25,33 +36,55 @@ class Builder:
         definitions: parsed Definitions (provides level vocabulary; not
                      yet used in v0 but available for future placement
                      decisions, e.g. building exits at zone boundaries).
+
+    Attributes (populated during build()):
+        deleted_count: number of existing objects swept by the
+                       cleanup-on-rebuild pass at the start of build().
+                       Reset to 0 at the start of every build() call.
     """
 
     def __init__(self, definitions: Definitions):
         self.definitions = definitions
+        self.deleted_count: int = 0
 
     def build(self, entities: list) -> list:
-        """Create one Evennia object per entity. Return the created objects.
+        """Clean up prior deployments of these files, then create fresh.
 
-        For each entity:
+        Step 1: collect the unique source-file set from the entities
+        being built. Sweep every existing Evennia object tagged with
+        ``wb_deployment_file=<file>`` for any file in that set and
+        delete it. The number deleted lands in ``self.deleted_count``.
 
-        - ``content["name"]`` becomes the object's ``key``. Falls back to
-          ``entity.path`` if no name field is present.
-        - ``content["description"]`` becomes ``db.desc`` (empty string default).
-        - ``content["typeclass"]`` selects the typeclass (dotted path);
-          defaults to ``evennia.objects.objects.DefaultRoom``.
+        Step 2: for each entity, create one Evennia object:
 
-        Raises BuilderError on creation failure (wraps Evennia exceptions).
+        - ``content["name"]`` becomes the object's ``key`` (falls back
+          to ``entity.path``).
+        - ``content["description"]`` becomes ``db.desc`` (default "").
+        - ``content["typeclass"]`` selects the typeclass; mandatory
+          field — the validator's Tier 1 predicate guarantees presence
+          and non-empty-string shape, and Tier 3 (under
+          ``evennia_runtime=True``) verifies resolvability.
+        - ``content["tags"]`` is normalised and applied; the load-bearing
+          ``wb_deployment_file`` / ``wb_deployment_id`` pair is appended
+          automatically.
+
+        Raises BuilderError on creation, tag-application, or cleanup
+        deletion failure.
         """
+        self.deleted_count = 0
+
         # Lazy import — Evennia bootstrap must complete before this is reachable.
         from evennia.utils.create import create_object
+
+        file_paths = {e.path for e in entities}
+        self._cleanup(file_paths)
 
         created = []
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
             key = content.get("name") or entity.path
             desc = content.get("description", "")
-            typeclass = content.get("typeclass", _DEFAULT_TYPECLASS)
+            typeclass = content["typeclass"]  # validator guarantees presence
 
             try:
                 obj = create_object(
@@ -63,6 +96,82 @@ class Builder:
                 raise BuilderError(
                     f"failed to create object for {entity.path!r}: {e}"
                 ) from e
+
+            try:
+                self._apply_tags(obj, entity)
+            except Exception as e:
+                raise BuilderError(
+                    f"failed to apply tags for {entity.path!r}: {e}"
+                ) from e
+
             created.append(obj)
 
         return created
+
+    def _cleanup(self, file_paths) -> None:
+        """Delete every existing object tagged with any of these source files.
+
+        Runs once at the start of build() per the cleanup-on-rebuild
+        model. Looks each file path up via Evennia's tag search and
+        deletes whatever it finds. Exits attached to a deleted room are
+        cleaned up by Evennia automatically.
+
+        Updates ``self.deleted_count`` with the running total.
+        """
+        # Lazy import — same reason as create_object above.
+        from evennia.utils.search import search_tag
+
+        for path in file_paths:
+            try:
+                existing = list(search_tag(
+                    key=path, category=_TAG_CATEGORY_DEPLOYMENT_FILE,
+                ))
+            except Exception as e:
+                raise BuilderError(
+                    f"cleanup: failed to query existing objects for "
+                    f"deployment_file={path!r}: {e}"
+                ) from e
+
+            for obj in existing:
+                try:
+                    obj.delete()
+                except Exception as e:
+                    raise BuilderError(
+                        f"cleanup: failed to delete existing "
+                        f"{getattr(obj, 'dbref', '?')} "
+                        f"(deployment_file={path!r}): {e}"
+                    ) from e
+                self.deleted_count += 1
+
+    def _apply_tags(self, obj, entity: LoadedEntity) -> None:
+        """Apply author-supplied tags + the auto-set deployment pair.
+
+        Author tags first, then the load-bearing identity pair. The
+        validator has already rejected any author-supplied tag whose
+        category begins with ``wb_``, so the order can't produce a
+        collision; this ordering just keeps the auto-set pair as the
+        last word about identity.
+        """
+        content = entity.content if isinstance(entity.content, dict) else {}
+        for tag in content.get("tags", []):
+            key, category = _normalise_tag(tag)
+            obj.tags.add(key, category=category)
+
+        deployment_id = content.get("deployment_id")
+        obj.tags.add(entity.path, category=_TAG_CATEGORY_DEPLOYMENT_FILE)
+        obj.tags.add(str(deployment_id), category=_TAG_CATEGORY_DEPLOYMENT_ID)
+
+
+def _normalise_tag(tag) -> tuple[str, str | None]:
+    """Turn a YAML tag entry into ``(key, category)``.
+
+    Shorthand string ⇒ ``(string, None)`` (Evennia's default category).
+    Dict form ⇒ ``(tag["key"], tag.get("category"))``.
+
+    The validator's ``_check_tags_field_shape`` predicate has already
+    rejected anything else by the time we reach this code, so this
+    function trusts shape.
+    """
+    if isinstance(tag, str):
+        return tag, None
+    return tag["key"], tag.get("category")

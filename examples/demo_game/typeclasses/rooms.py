@@ -22,3 +22,21 @@ class Room(ObjectParent, DefaultRoom):
     """
 
     pass
+
+
+class BakeryRoom(DefaultRoom):
+    """Minimal custom-typeclass smoke target for evennia-world-builder.
+
+    Inherits directly from DefaultRoom (skipping the gamedir's empty
+    `Room` base class) to keep the smoke focused: one extra attribute
+    set at creation time. Proves that a YAML-declared
+    `typeclass: typeclasses.rooms.BakeryRoom` lands as the actual
+    Python class on the created object and class-defined behaviour
+    fires correctly.
+
+    Deliberately trivial. Not a model for real game typeclasses.
+    """
+
+    def at_object_creation(self):
+        super().at_object_creation()
+        self.db.room_type = "bakery"

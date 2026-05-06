@@ -12,13 +12,13 @@ Reader → Definitions → Finder → Loader → Validator → Builder
 
 Validator consumes `LoadedEntity` objects from the Loader. It mutates nothing in the Evennia DB; the Builder is the only writer. Any check that needs Builder state to fire belongs in the Builder, not here.
 
-## Two-tier check architecture
+## Predicate-tier architecture
 
-Two kinds of check fire per entity in a single pass:
+Checks are grouped by the *situation* they apply to. The validator runs the tiers appropriate to its caller — controlled by a couple of orthogonal switches, not by environment-detection heuristics inside the predicates themselves.
 
-### Stateless predicates
+### Tier 1 — Stateless predicates (always run)
 
-Pure functions: `(entity) -> finding | None`. Each one inspects a single semantic concern and returns `None` (pass) or a finding string (fail). Registered in the `PER_ENTITY_PREDICATES` class tuple.
+Pure functions: `(entity) -> finding | None`. Each one inspects a single semantic concern and returns `None` (pass) or a finding string (fail). Registered in the `PER_ENTITY_PREDICATES` class tuple. Run on every entity in every Validator invocation regardless of caller.
 
 ```python
 def _check_deployment_id_well_formed(entity) -> str | None:
@@ -28,11 +28,49 @@ def _check_deployment_id_well_formed(entity) -> str | None:
 
 Adding a new stateless check: write the function, append to the tuple. Predicates are pure, so they're trivially testable in isolation and order-independent.
 
-### Stateful checks
+### Tier 2 — Stateful per-file checks (always run)
 
-Methods on Validator that read and update accumulating state — currently `self.seen_ids: dict[str, set[int]]`, the per-file id index. Used for checks that need to know about other entities (duplicate detection, eventually backward cross-reference resolution).
+Methods on Validator that read and update accumulating state — currently `self.seen_ids: dict[str, set[int]]`, the per-file id index. Used for checks that need to know about other entities loaded in the *same call* (duplicate detection; eventually backward cross-reference resolution).
 
 Stateful checks **only run on entities that pass every stateless predicate** for that entity. This keeps the index from being polluted with garbage (e.g. a non-integer `deployment_id` never enters a `set[int]`).
+
+### Tier 3 — Evennia-runtime predicates (caller opt-in)
+
+Stateless predicates that need the consumer's typeclasses + Evennia/Django runtime to be importable. Registered in `EVENNIA_ONLY_PREDICATES`. Run only when the caller passes `evennia_runtime=True` to `Validator.__init__`.
+
+```python
+def _check_typeclass_resolvable(entity) -> str | None:
+    # imports the dotted typeclass path; flags ImportError / AttributeError
+    ...
+```
+
+`wb-validate` (CLI) leaves `evennia_runtime` at its default `False` — the consumer's gamedir is generally not on `sys.path` in CI, so attempting these checks would either crash or false-positive.
+
+`wb_build` (Evennia command) passes `evennia_runtime=True` — the gamedir is fully loaded by definition; runtime checks can fire and refuse before the Builder is invoked.
+
+### Tier 4 — Cross-repo checks (controlled by what entities are passed)
+
+Currently planned, not yet shipped. Cross-reference resolution against the full `seen_ids` index requires that the validator was given the *whole repo's* entities in the call. That's a property of *what* the caller passed in (an empty-query `Loader.load(finder.find())` result), not a separate switch — see [validation-gating.md](validation-gating.md) for when this happens.
+
+## Two orthogonal switches
+
+The validator's behaviour is set by exactly two things:
+
+| Switch | Set by | Controls |
+|---|---|---|
+| `evennia_runtime` (constructor arg) | caller (`wb_build` → True; `wb-validate` → False) | Tier 3 predicates |
+| Whether entities are whole-repo or scoped | what `loader.load(...)` was called with | Tier 4 checks |
+
+No environment detection inside predicates. No try/except heuristics that conflate "wrong env" with "wrong path." The caller asserts what tier of check it can support; the validator runs the appropriate set.
+
+### Behaviour matrix
+
+|  | `wb-validate` (CI) | `wb-validate` (local dev) | `wb_build` |
+|---|---|---|---|
+| Tier 1 (stateless) | always | always | always |
+| Tier 2 (stateful per-file) | always | always | always |
+| Tier 3 (Evennia-runtime) | skipped | skipped (no gamedir loaded) | runs |
+| Tier 4 (cross-repo) | runs (whole-repo loaded) | runs (whole-repo loaded) | runs only on `wb_build all` or `--force-validate` |
 
 ## Complete refusal, not halt-on-first-error
 
@@ -63,12 +101,18 @@ Same Validator, two output channels.
 
 | Tier | Name | Failure |
 |---|---|---|
-| Stateless | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
-| Stateful | `_check_and_record_unique_id` | `deployment_id` already declared in the same file |
+| 1 — Stateless | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
+| 1 — Stateless | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
+| 1 — Stateless | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
+| 1 — Stateless | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
+| 2 — Stateful | `_check_and_record_unique_id` | `deployment_id` already declared in the same file |
+| 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
 
-## Cross-reference resolution (next tier)
+**Mandatory fields**: every entity must declare both `deployment_id` (non-negative integer) and `typeclass` (non-empty string). No defaults, no fallbacks — explicit declarations only. The Builder relies on the validator's guarantees to skip its own shape checks.
 
-Cross-references between entities (e.g. `destination: { deployment_id: 34 }`) need a third tier: a deferred-check phase that runs **after** the per-entity loop, against the fully-built `seen_ids` index. Backward refs resolve in-pass; forward refs (target processed later) defer to that post-loop phase.
+## Cross-reference resolution (Tier 4, planned)
+
+Cross-references between entities (e.g. `destination: { deployment_id: 34 }`) need a deferred-check phase that runs **after** the per-entity loop, against the fully-built `seen_ids` index. Backward refs resolve in-pass; forward refs (target processed later) defer to that post-loop phase.
 
 The check itself is straightforward — given a `(deployment_file, deployment_id)` pair, is it in the index? — but the YAML shape of cross-refs (which fields carry them, how same-file defaults work) is settled in [deployment-identity.md](deployment-identity.md) and lands when the Builder grows exit/contents support.
 

@@ -105,9 +105,11 @@ def _run_validator(caller, definitions, entities, refusal_label) -> bool:
     """Run a Validator pass over entities. Surface every message via caller.
 
     Returns True on a clean pass, False if the validator refused. Callers
-    should return early on False.
+    should return early on False. wb_build runs inside Evennia, so the
+    validator gets evennia_runtime=True (Tier 3 predicates fire — e.g.
+    typeclass-resolvable).
     """
-    validator = Validator(definitions)
+    validator = Validator(definitions, evennia_runtime=True)
     try:
         validator.validate(entities)
     except ValidatorError as e:
@@ -296,6 +298,12 @@ class CmdWBBuild(BaseCommand):
             caller.msg(f"wb_build: build failed: {e}")
             return
 
+        if builder.deleted_count:
+            caller.msg(
+                f"wb_build: Builder cleaned up {builder.deleted_count} existing "
+                f"object{'' if builder.deleted_count == 1 else 's'} "
+                f"(cleanup-on-rebuild)"
+            )
         caller.msg(
             f"wb_build: Builder created {len(created)} object{'' if len(created) == 1 else 's'}:"
         )
