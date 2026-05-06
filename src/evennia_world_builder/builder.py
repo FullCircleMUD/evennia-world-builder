@@ -14,8 +14,13 @@ Same YAML applied N times produces the same end state. Idempotency
 emerges from "delete-everything-tagged-as-from-this-file, then build
 it" — no diff machinery, no reconcile.
 
-Per-entity construction currently lands typeclass + key + db.desc +
-tags. Aliases, locks, attributes, exits, contents are upcoming spikes.
+Per-entity construction lands typeclass + key + location + db.desc +
+aliases + locks + attributes + tags. ``contents:`` recursion is
+handled upstream by the Loader's flatten + the ``_built_by_id`` map
+that the Builder maintains during a single build() pass — children's
+location cross-refs resolve to their parent's just-built Evennia
+object via direct dict lookup. ``exits:`` and cross-file location
+refs land in spike 4.
 """
 from .definitions import Definitions
 from .errors import BuilderError
@@ -46,6 +51,11 @@ class Builder:
     def __init__(self, definitions: Definitions):
         self.definitions = definitions
         self.deleted_count: int = 0
+        # Populated during build(); maps (deployment_file, deployment_id) →
+        # freshly-created Evennia object. Lets a child entity's
+        # location-cross-ref resolve to its parent's just-built object via
+        # a single dict lookup. Reset at the start of every build() call.
+        self._built_by_id: dict = {}
 
     def build(self, entities: list) -> list:
         """Clean up prior deployments of these files, then create fresh.
@@ -61,8 +71,13 @@ class Builder:
         are present and well-shaped:
 
         - ``content["name"]`` becomes the object's ``key``.
-        - ``content["location"]`` becomes the object's ``location``
-          (currently must be ``null``; cross-ref dicts land in spike 4).
+        - ``content["location"]`` is either ``null`` (orphan placement)
+          or a cross-ref dict ``{deployment_file, deployment_id}``
+          pointing at another entity. The Loader synthesises this on
+          every nested entity at flatten time; top-level entities can
+          declare it directly. Resolution happens in-pass via
+          ``self._built_by_id`` — the parent is always already in the
+          map by the time the child needs it (depth-first pre-order).
         - ``content["typeclass"]`` selects the typeclass; Tier 3 (under
           ``evennia_runtime=True``) verifies resolvability.
 
@@ -73,10 +88,11 @@ class Builder:
           ``wb_deployment_file`` / ``wb_deployment_id`` pair is appended
           automatically.
 
-        Raises BuilderError on creation, tag-application, or cleanup
-        deletion failure.
+        Raises BuilderError on creation, tag-application, cleanup
+        deletion, or unresolved-location-ref failure.
         """
         self.deleted_count = 0
+        self._built_by_id = {}
 
         # Lazy import — Evennia bootstrap must complete before this is reachable.
         from evennia.utils.create import create_object
@@ -89,9 +105,17 @@ class Builder:
             content = entity.content if isinstance(entity.content, dict) else {}
             # Validator's Tier 1 predicates guarantee these fields are present.
             key = content["name"]
-            location = content["location"]
             typeclass = content["typeclass"]
             desc = content.get("description", "")
+
+            try:
+                location = self._resolve_location(content["location"], entity.path)
+            except BuilderError:
+                raise
+            except Exception as e:
+                raise BuilderError(
+                    f"failed to resolve location for {entity.path!r}: {e}"
+                ) from e
 
             try:
                 obj = create_object(
@@ -104,6 +128,10 @@ class Builder:
                 raise BuilderError(
                     f"failed to create object for {entity.path!r}: {e}"
                 ) from e
+
+            # Stash by (file, id) so any child entity following in this
+            # build pass can resolve its location-cross-ref to this obj.
+            self._built_by_id[(entity.path, content["deployment_id"])] = obj
 
             try:
                 self._apply_aliases(obj, entity)
@@ -136,6 +164,42 @@ class Builder:
             created.append(obj)
 
         return created
+
+    def _resolve_location(self, loc_ref, entity_path: str):
+        """Turn a content['location'] value into the arg for create_object.
+
+        ``None`` ⇒ ``None`` (orphan placement).
+
+        Cross-ref dict ``{deployment_file, deployment_id}`` ⇒ the
+        Evennia object stashed under that key in ``self._built_by_id``.
+        The Loader synthesises this dict on every nested entity at
+        flatten time, pointing at the parent's `(path, deployment_id)`;
+        the parent is built earlier in this same build() pass (Loader
+        emits depth-first pre-order), so the lookup always hits.
+
+        Cross-file refs to entities not built in this invocation (i.e.
+        another file's content already in the DB from a previous build)
+        will land as a fall-through to a tag-search query in spike 4;
+        for now they raise ``BuilderError``.
+
+        Validator's ``_check_location_well_formed`` has already
+        guaranteed the value is null or a well-shaped cross-ref dict, so
+        this method trusts shape.
+        """
+        if loc_ref is None:
+            return None
+
+        key = (loc_ref["deployment_file"], loc_ref["deployment_id"])
+        try:
+            return self._built_by_id[key]
+        except KeyError:
+            raise BuilderError(
+                f"{entity_path!r}: location refers to "
+                f"(deployment_file={key[0]!r}, deployment_id={key[1]!r}) "
+                f"but no such entity has been built in this pass — "
+                f"author the parent earlier in build order, or (spike 4) "
+                f"ensure the cross-file parent exists in the DB"
+            )
 
     def _cleanup(self, file_paths) -> None:
         """Delete every existing object tagged with any of these source files.

@@ -57,17 +57,23 @@ The library normalises both shapes — a top-level mapping is treated as a one-e
 
 ## Cross-references
 
-Cross-references between entities use the composite identity. The author specifies only what differs from the current file's scope:
+Cross-references between entities use the composite identity. **Both keys are always required** — no same-file inference. Uniform shape simplifies the validator's predicate and the Builder's lookup.
 
 ```yaml
-# Same-file: deployment_file inferred as "this file"
-destination: { deployment_id: 34 }
-
-# Cross-file: deployment_file explicit
-destination: { deployment_file: millholm/bakery.yaml, deployment_id: 1 }
+location: { deployment_file: millholm/bakery.yaml, deployment_id: 1 }
 ```
 
-The amount of qualification scales with how far the reference points: same-file refs stay terse; cross-file refs name the target file. This makes "the file is the atomic unit" visible in the syntax — refs that stay in the unit you're editing don't need to name it.
+For nested entities (children of a `contents:` block) the Loader synthesises this dict automatically at flatten time, pointing at the immediate parent. Authors only declare cross-refs explicitly on top-level entities; refusing author-written `location:` on nested entities is a Tier 1 validator predicate (`_check_no_author_location_on_nested`).
+
+### Loader synthesis
+
+When the Loader walks a `contents:` block, for each nested mapping:
+
+1. Records `had_author_location = "location" in mapping` against the *original* YAML (before any modification).
+2. Synthesises `mapping["location"] = {deployment_file: <parent.path>, deployment_id: <parent.deployment_id>}`, overwriting any author-written value.
+3. Emits the entity as a `LoadedEntity` with `is_nested=True` and the recorded `had_author_location`.
+
+The validator refuses entities with `is_nested=True and had_author_location=True` so the Loader's overwrite is never silent. Nesting recurses arbitrarily — the synthesis at each level points at the *immediate* parent, so a gem inside a backpack inside a room places the gem in the backpack (not the room).
 
 ## Cleanup model
 
@@ -82,12 +88,12 @@ This handles all three edit shapes uniformly: entities added, entities removed, 
 
 The Validator (see [validator.md](validator.md)) enforces the contract. Currently shipped:
 
-- **Every leaf entity declares `deployment_id`** — mandatory, non-negative integer, `bool` rejected even though it's an `int` subclass.
+- **Every entity declares `deployment_id`** — mandatory, non-negative integer, `bool` rejected even though it's an `int` subclass. Top-level and nested entities share one per-file namespace.
 - **No duplicate `deployment_id`s within a file** — flagged as the per-file `{deployment_file: {ids}}` index is built incrementally during the per-entity pass.
+- **`location:` shape** — accepts `null` or a strict `{deployment_file: non-empty str, deployment_id: non-negative int}` cross-ref dict; refuses extras, missing keys, or wrong types.
+- **No author-written `location:` on nested entities** — refuses if the Loader recorded `had_author_location=True` on an `is_nested=True` entity (i.e. the author wrote `location:` and the Loader overwrote it).
 
-Pending (lands when cross-reference YAML shape is settled):
-
-- **Cross-reference resolution** — for any `(deployment_file, deployment_id)` reference, the target file exists and the referenced entity exists in that file.
+Same-file *backward* cross-ref resolution happens at build time via the Builder's `_built_by_id` map (see [builder.md](builder.md)) — same identity scheme, same tuple key, direct dict lookup. Same-file *forward* refs and cross-file refs still pend a Tier 4 validator phase (forward refs) and cross-repo machinery (spike 4).
 
 Validator scope is per-file for the uniqueness check, plus the `{deployment_file: {ids}}` index for cross-ref resolution. Memory footprint stays small even for large repos: one file's content at a time + an integer-set index.
 

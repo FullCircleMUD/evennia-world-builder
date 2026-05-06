@@ -31,14 +31,40 @@ class LoadedEntity:
     """A single leaf content file's parsed contents and hierarchical position.
 
     Attributes:
-        location: Full hierarchical position ({level_name: value} dict).
-        content:  Parsed YAML body (yaml.safe_load output).
-        path:     Source file path, for diagnostic messages.
+        location:  Full hierarchical position ({level_name: value} dict).
+        content:   Parsed YAML body (yaml.safe_load output). For an entity
+                   loaded from a `contents:` block, the parent's `contents`
+                   key has already been popped by the Loader so the body
+                   doesn't carry duplicate child data; for nested entities
+                   the Loader has also overwritten ``content["location"]``
+                   with a cross-ref dict pointing at the parent (see
+                   ``had_author_location`` for whether the author had
+                   written a ``location:`` of their own).
+        path:      Source file path, for diagnostic messages.
+        is_nested: True iff this entity was authored inside another
+                   entity's `contents:` block. Top-level entities (the
+                   roots of a YAML file) are False. Nested entities share
+                   their parent's ``path`` and ``location`` — the file is
+                   the atomic deployment unit, and a `contents:` block
+                   doesn't change that.
+        had_author_location:
+                   True iff the author wrote a ``location:`` key on this
+                   entity's YAML mapping (whether ``null``, a cross-ref
+                   dict, or anything else). Recorded *before* the Loader
+                   synthesises ``location:`` on nested entities so the
+                   validator can later refuse author-written ``location:``
+                   on a nested entity (where placement is implicit in the
+                   YAML structure). On top-level entities the flag just
+                   reflects what the YAML had; the validator's existing
+                   ``_check_location_well_formed`` already enforces that
+                   top-level entities declare ``location:``.
     """
 
     location: dict
     content: object
     path: str
+    is_nested: bool = False
+    had_author_location: bool = False
 
 
 class Loader:
@@ -65,11 +91,16 @@ class Loader:
                 raise LoaderMissingEntryError(
                     f"Index pointed at file {found.path!r} but it was not found at source"
                 ) from e
-            return [LoadedEntity(
-                location=dict(found.location),
-                content=result.parsed,
+            # A leaf YAML file is either one mapping (one entity) or a list
+            # of mappings (many entities). Either way each top-level mapping
+            # may carry a `contents:` block that nests further entities;
+            # _flatten turns the whole tree into a flat depth-first
+            # pre-order list so the parent always precedes its children.
+            return self._flatten_top_level(
+                parsed=result.parsed,
                 path=found.path,
-            )]
+                location=dict(found.location),
+            )
 
         # folder — read its index, recurse over entries in order
         index_path = f"{found.path}/{_INDEX_FILENAME}" if found.path else _INDEX_FILENAME
@@ -105,6 +136,100 @@ class Loader:
             result.extend(self._load(child_found))
 
         return result
+
+    def _flatten_top_level(self, parsed, path: str, location: dict) -> list:
+        """Turn a leaf file's parsed YAML into a flat list of LoadedEntities.
+
+        A YAML file is either a single top-level mapping (one entity) or
+        a list of mappings (many entities); within each top-level entity,
+        a ``contents:`` block may nest further entities. This method
+        handles the file-shape dispatch; ``_flatten`` walks each
+        top-level subtree depth-first pre-order.
+
+        Anything other than a list at the top level (mapping, None, str,
+        etc.) is passed through to ``_flatten`` once — non-mapping
+        bodies emerge as a single LoadedEntity for the validator's
+        existing field-shape predicates to refuse with a clear message.
+        """
+        if isinstance(parsed, list):
+            results = []
+            for item in parsed:
+                results.extend(
+                    self._flatten(item, path, location, is_nested=False, parent_deployment_id=None),
+                )
+            return results
+        return self._flatten(parsed, path, location, is_nested=False, parent_deployment_id=None)
+
+    def _flatten(
+        self, mapping, path: str, location: dict, is_nested: bool,
+        parent_deployment_id,
+    ) -> list:
+        """Walk one entity and its ``contents:`` subtree depth-first pre-order.
+
+        Pops the ``contents`` key from a shallow copy of the mapping so
+        the emitted LoadedEntity's ``content`` doesn't carry duplicate
+        child data, then recurses into each child mapping with
+        ``is_nested=True`` and the same ``path`` / ``location`` (a
+        ``contents:`` block doesn't cross the file boundary).
+
+        For nested entities the Loader records ``had_author_location``
+        from the *original* mapping before any modification, then
+        unconditionally **synthesises** ``content["location"]`` as
+        ``{deployment_file: path, deployment_id: parent_deployment_id}``.
+        The synthesised dict overwrites whatever the author wrote (the
+        validator will refuse the author's value via the recorded flag
+        in a later step). Top-level entities are not synthesised — their
+        ``location:`` is the author's responsibility, and
+        ``_check_location_well_formed`` enforces it.
+
+        Defensive about malformed input — non-dict mappings emerge as a
+        single LoadedEntity carrying the raw value (validator's
+        field-shape predicates refuse them); a non-list ``contents``
+        value is silently ignored here (validator step 2 will land
+        ``_check_contents_field_shape`` to refuse it cleanly); a
+        non-mapping child within ``contents:`` is skipped (same
+        rationale).
+        """
+        if not isinstance(mapping, dict):
+            return [LoadedEntity(
+                location=dict(location),
+                content=mapping,
+                path=path,
+                is_nested=is_nested,
+                had_author_location=False,
+            )]
+
+        had_author_location = "location" in mapping
+
+        body = dict(mapping)
+        children = body.pop("contents", None)
+
+        if is_nested:
+            body["location"] = {
+                "deployment_file": path,
+                "deployment_id": parent_deployment_id,
+            }
+
+        results = [LoadedEntity(
+            location=dict(location),
+            content=body,
+            path=path,
+            is_nested=is_nested,
+            had_author_location=had_author_location,
+        )]
+
+        if isinstance(children, list):
+            my_deployment_id = mapping.get("deployment_id")
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                results.extend(self._flatten(
+                    child, path, location,
+                    is_nested=True,
+                    parent_deployment_id=my_deployment_id,
+                ))
+
+        return results
 
     def _validate_entries(self, parsed, path: str) -> list:
         if not isinstance(parsed, dict) or "entries" not in parsed:

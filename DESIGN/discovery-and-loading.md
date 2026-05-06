@@ -92,21 +92,37 @@ class Finder:
 
 ### Algorithm
 
-Depth-first traversal driven by indexes:
+Depth-first traversal driven by indexes, then per-file flatten of any `contents:` recursion:
 
-- If location is a **file**: read it via Reader; return one-element list.
+- If location is a **file**: read it via Reader, then **flatten**:
+  - A top-level mapping is one entity; a top-level list of mappings is many.
+  - For each top-level entity, walk its `contents:` block (if any) depth-first pre-order, emitting each nested mapping as its own `LoadedEntity` with `is_nested=True`. The parent's `contents:` key is popped from the emitted body so downstream consumers don't see duplicate child data.
+  - Nested entities inherit the parent's `path` and `location` dict (a `contents:` block doesn't cross the file boundary).
 - If location is a **folder**: read its `index.yaml`; for each entry, recurse with the child's `FoundLocation` (path + kind constructed via path inference; `location` dict extended with `{levels[depth]: entry.name}`); concatenate results.
 
 Indexes are navigation only — never content. The Loader walks indexes; it never reads files not listed in an index.
+
+### Location synthesis on nested entities
+
+For each nested mapping, before emitting the LoadedEntity, the Loader:
+
+1. Records `had_author_location = "location" in mapping` against the *original* YAML.
+2. Synthesises `mapping["location"] = {deployment_file: <parent.path>, deployment_id: <parent.deployment_id>}`, overwriting whatever the author wrote.
+
+This unifies the `location:` shape across top-level and nested entities (both are now either `null` or a cross-ref dict), letting the validator and Builder treat them uniformly. The validator separately refuses author-written `location:` on a nested entity via `had_author_location` so the overwrite is never silent. See [deployment-identity.md](deployment-identity.md#loader-synthesis) for the synthesis rationale and [validator.md](validator.md) for the predicate.
+
+Defensive about malformed input: a non-list `contents:` value is silently ignored (skip recursion); a non-mapping child within a list is skipped. No errors raised at load time — the validator's existing field-shape predicates catch malformed entity bodies, and authoring tools surface YAML structure problems upstream.
 
 ### API
 
 ```python
 @dataclass(frozen=True)
 class LoadedEntity:
-    location: dict[str, str]   # full hierarchical position
-    content: dict              # parsed YAML body (yaml.safe_load output)
-    path: str                  # source file path, for diagnostic messages
+    location: dict[str, str]   # full hierarchical position (folder discovery; same for nested)
+    content: dict              # parsed YAML body; for nested, `contents` popped + `location` synthesised
+    path: str                  # source file path; same for top-level + nested in the same file
+    is_nested: bool = False    # True iff loaded from inside a `contents:` block
+    had_author_location: bool = False  # True iff the original YAML had a `location:` key
 
 class Loader:
     def __init__(self, reader: Reader, definitions: Definitions): ...

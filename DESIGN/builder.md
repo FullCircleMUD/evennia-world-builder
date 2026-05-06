@@ -23,7 +23,7 @@ def build(self, entities):
         ...
 ```
 
-`_cleanup` calls `evennia.utils.search.search_tag(key=path, category="wb_deployment_file")` once per source file in the build set, deleting every existing object that came from that file. Evennia's `obj.delete()` safely relocates contents (including any player standing in the room) to the home location before the row is removed — operators get a clean message, not a crash.
+`_cleanup` calls `evennia.utils.search.search_tag(key=path, category="wb_deployment_file")` once per source file in the build set, deleting every existing object that came from that file. **All entities from a file share the same `wb_deployment_file` value** — top-level rooms and their nested `contents:` items alike — so a single file-level sweep covers the whole tree. Evennia's `obj.delete()` safely relocates contents (including any player standing in the room) to the home location before the row is removed — operators get a clean message, not a crash.
 
 The number of deleted objects lands on `Builder.deleted_count` so callers (`wb_build` command) can surface the cleanup tally to the operator.
 
@@ -40,15 +40,48 @@ create_object  →  _apply_aliases  →  _apply_locks  →  _apply_attributes  �
 ### `create_object` (the create call)
 
 ```python
+location = self._resolve_location(content["location"], entity.path)
 obj = create_object(
     typeclass=content["typeclass"],
     key=content["name"],
-    location=content["location"],   # currently always None — see deployment-identity.md
+    location=location,
     attributes=[("desc", content.get("description", ""))],
 )
+self._built_by_id[(entity.path, content["deployment_id"])] = obj
 ```
 
 `create_object` triggers the typeclass's `at_object_creation()` hook, which can set its own default attributes (e.g. `self.db.room_type = "bakery"`). Any subsequent `_apply_*` call below overwrites those defaults if the YAML declares the same key.
+
+#### Location resolution and the in-build map
+
+`content["location"]` is one of two shapes (the validator guarantees this):
+
+- `None` — orphan placement.
+- `{deployment_file: str, deployment_id: int}` — a cross-reference at the entity that contains this one.
+
+The Builder maintains `self._built_by_id: dict[(path, deployment_id), obj]`, populated as each entity is created. `_resolve_location` is a one-line dict lookup against the cross-ref dict's `(deployment_file, deployment_id)` tuple — same identity scheme the Loader uses to synthesise the dict in the first place, so the keys match by construction.
+
+```python
+def _resolve_location(self, loc_ref, entity_path):
+    if loc_ref is None:
+        return None
+    key = (loc_ref["deployment_file"], loc_ref["deployment_id"])
+    try:
+        return self._built_by_id[key]
+    except KeyError:
+        raise BuilderError(f"{entity_path}: location refers to {key} ...")
+```
+
+The map is reset at the start of every `build()` call and discarded when it returns; the durable identity is the `wb_deployment_file` / `wb_deployment_id` tag pair the Builder writes onto every object.
+
+#### Single-pass + ordering contract
+
+Resolution is single-pass: the parent must be in `_built_by_id` by the time the child needs it. Two ordering guarantees make this work:
+
+- **Same-file nested entities**: the Loader emits depth-first pre-order (parent before its children), so a child's location cross-ref always resolves to a just-built parent in the same `build()` call.
+- **Cross-file refs (spike 4 future)**: file-level builds run in `index.yaml` order, so authors put referenced files before referencing files. Until spike 4 lands a DB tag-search fallback, cross-file refs to entities NOT being built in this invocation will refuse with `BuilderError`.
+
+**Same-file forward refs are refused.** If a top-level entity authors `location: {deployment_file: <self>, deployment_id: <X>}` pointing at another top-level entity that comes later in the file, single-pass build fails — the author has to reorder. (Future enhancement: validator-side check that catches this at validate time, before any DB mutation.)
 
 ### `_apply_aliases`
 
@@ -86,6 +119,7 @@ Any exception from `create_object`, `obj.aliases.add`, `obj.locks.add`, `obj.att
 
 ## Out of scope (deferred)
 
-- **Recursion** into `exits:` and `contents:` (spike 2). Currently the Builder treats every entity as a top-level entity; nested entity blocks declared in YAML are present in `LoadedEntity.content` but not yet walked.
-- **Cross-reference resolution** for exit `destination:` and content placement under another file's parent (spike 4). The validator's Tier 4 lands here too — see [validator.md](validator.md).
+- **`exits:` recursion** (spike 4). The Loader walks `contents:` only today; `exits:` blocks in YAML are not yet flattened.
+- **Cross-file location refs** (spike 4). The Builder's `_resolve_location` only reads `_built_by_id` — entities built in this invocation. A parent in another file already in the DB from a previous invocation will need a tag-search fallback (`evennia.utils.search.search_tag(key=path, category="wb_deployment_file")` filtered to the right `deployment_id`).
+- **Forward-ref validation** (separate predicate). Same-file forward refs currently fail at the Builder; a validator-side check that refuses them at validate time (so the failure surfaces alongside other findings, before any DB mutation) is a small future enhancement.
 - **Strict attribute validation** — typeclass-introspection check that rejects YAML attributes whose key isn't declared on the entity's typeclass. The `strict-attributes` setting in `definitions.yaml` is scaffolded today but refuses to parse `true` until the validator-side feature lands.

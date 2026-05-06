@@ -99,50 +99,43 @@ Same Validator, two output channels.
 
 ## Currently shipped checks
 
-| Tier | Scope | Name | Failure |
-|---|---|---|---|
-| 1 — Stateless | every entity | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
-| 1 — Stateless | every entity | `_check_name_well_formed` | field missing, not a string, or empty/whitespace |
-| 1 — Stateless | every entity | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
-| 1 — Stateless | every entity | `_check_description_field_shape` | `description` (optional) present but not a string |
-| 1 — Stateless | every entity | `_check_aliases_field_shape` | `aliases` (optional) not a list, or items not non-empty strings |
-| 1 — Stateless | every entity | `_check_locks_field_shape` | `locks` (optional) not a non-empty string |
-| 1 — Stateless | every entity | `_check_attributes_field_shape` | `attributes` (optional) not a list, item not a mapping, missing/empty/non-string `key`, missing `value`, or non-string `category` |
-| 1 — Stateless | every entity | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
-| 1 — Stateless | every entity | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
-| 1 — Stateless | **top-level only** | `_check_location_well_formed` | field missing, or non-null (cross-ref dict support deferred to spike 4) |
-| 2 — Stateful | every entity | `_check_and_record_unique_id` | `deployment_id` already declared in the same file |
-| 3 — Evennia-runtime | every entity | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
+| Tier | Name | Failure |
+|---|---|---|
+| 1 — Stateless | `_check_deployment_id_well_formed` | field missing, not an integer (rejects `bool`), or negative |
+| 1 — Stateless | `_check_name_well_formed` | field missing, not a string, or empty/whitespace |
+| 1 — Stateless | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
+| 1 — Stateless | `_check_location_well_formed` | field missing; or value is neither `null` nor a strict `{deployment_file: non-empty str, deployment_id: non-negative int}` cross-ref dict (extra keys refused, `bool` excluded from int) |
+| 1 — Stateless | `_check_no_author_location_on_nested` | nested entity (`is_nested=True`) had a `location:` key in the original YAML — the Loader synthesises one and silently overwriting author intent would be a "fails loudly" violation |
+| 1 — Stateless | `_check_description_field_shape` | `description` (optional) present but not a string |
+| 1 — Stateless | `_check_aliases_field_shape` | `aliases` (optional) not a list, or items not non-empty strings |
+| 1 — Stateless | `_check_locks_field_shape` | `locks` (optional) not a non-empty string |
+| 1 — Stateless | `_check_attributes_field_shape` | `attributes` (optional) not a list, item not a mapping, missing/empty/non-string `key`, missing `value`, or non-string `category` |
+| 1 — Stateless | `_check_tags_field_shape` | `tags` not a list, items not string-or-mapping, dict missing/empty `key`, non-string `category` |
+| 1 — Stateless | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
+| 2 — Stateful | `_check_and_record_unique_id` | `deployment_id` already declared in the same file (top-level + nested share one namespace) |
+| 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
 
-### Top-level vs nested scope
-
-Some predicates run on every entity (top-level *and* nested-inside-`contents:`/`exits:`); others apply only to top-level entities, where YAML structure doesn't itself declare position.
-
-`_check_location_well_formed` is the first of the latter kind. A nested entity's location is implicit in the YAML structure that nests it, so requiring `location:` on those would force redundant declarations; conversely, a top-level entity has no structural signal, so explicit `location:` is what disambiguates orphan rooms from accidentally-orphaned objects the author meant to place somewhere.
-
-The Validator stores these in two tuples:
-
-- `PER_ENTITY_PREDICATES` — runs on every entity.
-- `TOP_LEVEL_PREDICATES` — runs only on top-level entities. Today every entity is top-level (recursion lands in spike 2), so the loop runs both uniformly; once nested entities exist, the validator's iteration will distinguish via a `LoadedEntity` flag and skip `TOP_LEVEL_PREDICATES` for nested ones.
-
-When recursion lands, a sibling predicate (refusing `location:` *on* nested entities) joins the picture, since author-set location on a nested entity would conflict with the implicit nesting declaration.
+All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader now synthesises `content["location"]` as a cross-ref dict on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
 
 ### Mandatory fields
 
 Every entity must declare:
 
-- `deployment_id` — non-negative integer
+- `deployment_id` — non-negative integer, unique within its file
 - `name` — non-empty string
 - `typeclass` — non-empty string
-- `location` — explicit (currently `null` only) — *top-level entities only*
+- `location` — explicit (`null` for orphan, or a `{deployment_file, deployment_id}` cross-ref dict)
+
+For a nested entity the Loader synthesises `location:` automatically (pointing at the parent), so authors only need to declare it on top-level entities — and authoring it on a nested entity is refused.
 
 No defaults, no fallbacks. The Builder relies on the validator's guarantees to skip its own shape checks.
 
-## Cross-reference resolution (Tier 4, planned)
+## Cross-reference resolution
 
-Cross-references between entities (e.g. `destination: { deployment_id: 34 }`) need a deferred-check phase that runs **after** the per-entity loop, against the fully-built `seen_ids` index. Backward refs resolve in-pass; forward refs (target processed later) defer to that post-loop phase.
+Cross-reference resolution happens on two levels, by two different actors:
 
-The check itself is straightforward — given a `(deployment_file, deployment_id)` pair, is it in the index? — but the YAML shape of cross-refs (which fields carry them, how same-file defaults work) is settled in [deployment-identity.md](deployment-identity.md) and lands when the Builder grows exit/contents support.
+- **Same-file backward refs are resolved by the Builder in-pass** via its `_built_by_id` map (see [builder.md](builder.md)). The Loader emits depth-first pre-order so a nested entity's parent is always already built when its location dict is resolved. No validator-side work needed here — the Builder fails loudly with `BuilderError` if the lookup misses.
+- **Same-file forward refs and cross-file refs** are still pending. A future Tier 4 phase against the per-file `seen_ids` index will refuse same-file forward refs at validate time (so the failure surfaces alongside other findings, before any DB mutation); cross-file refs will get a corresponding cross-repo index in spike 4 along with the Builder's tag-search fallback for parents already in the DB from a previous invocation.
 
 ## Out of scope (deferred)
 

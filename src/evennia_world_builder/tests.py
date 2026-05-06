@@ -16,6 +16,8 @@ from django.test import TestCase, override_settings
 
 import evennia_world_builder
 from evennia_world_builder import (
+    Builder,
+    BuilderError,
     Definitions,
     DefinitionsError,
     Finder,
@@ -621,6 +623,258 @@ class LoaderTest(TestCase):
         with self.assertRaises(LoaderMissingIndexError):
             loader.load(FoundLocation(path="", kind="folder", location={}))
 
+    # --- contents: recursion (spike 2 step 1) ---
+    #
+    # The Loader flattens a single YAML file's `contents:` tree into a flat
+    # depth-first pre-order list. Top-level entities have is_nested=False;
+    # entities authored inside a `contents:` block have is_nested=True. The
+    # parent's `contents` key is popped off the emitted LoadedEntity's
+    # content so downstream consumers don't see duplicate child data.
+
+    def _load_yaml(self, yaml_body):
+        """Wrap yaml_body in a one-file scaffold and return loaded entities."""
+        scaffold = {
+            "definitions.yaml": {"levels": ["zone"]},
+            "index.yaml": {"entries": [{"name": "x", "kind": "file"}]},
+            "x.yaml": yaml_body,
+        }
+        reader = FixtureReader(scaffold)
+        defs = Definitions.from_reader(reader)
+        loader = Loader(reader, defs)
+        return loader.load(FoundLocation(path="", kind="folder", location={}))
+
+    def test_top_level_mapping_no_contents(self):
+        # Regression: the existing single-entity flow still emits one
+        # LoadedEntity with is_nested=False.
+        finder, loader = self._make()
+        entities = loader.load(finder.find({"zone": "millholm", "room": "inn"}))
+        self.assertEqual(len(entities), 1)
+        self.assertFalse(entities[0].is_nested)
+
+    def test_top_level_mapping_empty_contents(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Empty",
+            "typeclass": "ev.X", "location": None,
+            "contents": [],
+        })
+        self.assertEqual(len(entities), 1)
+        self.assertFalse(entities[0].is_nested)
+        self.assertNotIn("contents", entities[0].content)
+
+    def test_top_level_mapping_with_one_nested(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "contents": [{"deployment_id": 2, "name": "Counter"}],
+        })
+        self.assertEqual(len(entities), 2)
+        self.assertEqual([e.is_nested for e in entities], [False, True])
+        self.assertEqual([e.content["name"] for e in entities], ["Bakery", "Counter"])
+
+    def test_top_level_mapping_with_multiple_nested(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "contents": [
+                {"deployment_id": 2, "name": "A"},
+                {"deployment_id": 3, "name": "B"},
+                {"deployment_id": 4, "name": "C"},
+            ],
+        })
+        self.assertEqual(len(entities), 4)
+        self.assertEqual([e.is_nested for e in entities], [False, True, True, True])
+        self.assertEqual(
+            [e.content["name"] for e in entities],
+            ["Bakery", "A", "B", "C"],
+        )
+
+    def test_arbitrarily_deep_nesting(self):
+        # Pre-order: room → chest → key. The chest itself is_nested=True,
+        # and the key inside the chest is_nested=True too (nesting depth
+        # doesn't change the flag — only "is this inside another entity").
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Room",
+            "contents": [{
+                "deployment_id": 2, "name": "Chest",
+                "contents": [{"deployment_id": 3, "name": "Key"}],
+            }],
+        })
+        self.assertEqual(len(entities), 3)
+        self.assertEqual([e.is_nested for e in entities], [False, True, True])
+        self.assertEqual(
+            [e.content["name"] for e in entities],
+            ["Room", "Chest", "Key"],
+        )
+
+    def test_top_level_list_of_mappings(self):
+        # File-level list of two parents; first parent has one child.
+        # Outer order × pre-order within each subtree:
+        # First, FirstChild, Second.
+        entities = self._load_yaml([
+            {
+                "deployment_id": 1, "name": "First",
+                "contents": [{"deployment_id": 2, "name": "FirstChild"}],
+            },
+            {"deployment_id": 3, "name": "Second"},
+        ])
+        self.assertEqual(len(entities), 3)
+        self.assertEqual([e.is_nested for e in entities], [False, True, False])
+        self.assertEqual(
+            [e.content["name"] for e in entities],
+            ["First", "FirstChild", "Second"],
+        )
+
+    def test_nested_inherits_parent_path_and_location(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{"deployment_id": 2, "name": "Child"}],
+        })
+        self.assertEqual(entities[0].path, entities[1].path)
+        self.assertEqual(entities[0].location, entities[1].location)
+        self.assertEqual(entities[0].path, "x.yaml")
+
+    def test_contents_key_removed_from_parent_content(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "description": "preserved",
+            "contents": [{"deployment_id": 2, "name": "Child"}],
+        })
+        # Parent body has the original keys minus `contents`.
+        self.assertNotIn("contents", entities[0].content)
+        self.assertEqual(entities[0].content["name"], "Parent")
+        self.assertEqual(entities[0].content["description"], "preserved")
+
+    def test_malformed_contents_not_a_list(self):
+        # `contents: "oops"` — Loader silently skips recursion. The
+        # validator's _check_contents_field_shape (step 2) refuses this
+        # cleanly; for step 1 the Loader just doesn't crash.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": "oops",
+        })
+        self.assertEqual(len(entities), 1)
+        self.assertFalse(entities[0].is_nested)
+
+    def test_malformed_contents_non_mapping_child(self):
+        # A non-dict child inside `contents:` is skipped without raising.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": ["oops", {"deployment_id": 2, "name": "Real"}],
+        })
+        # The string child is skipped; the dict child is emitted.
+        self.assertEqual(len(entities), 2)
+        self.assertEqual([e.is_nested for e in entities], [False, True])
+        self.assertEqual(entities[1].content["name"], "Real")
+
+    # --- location synthesis on nested entities (spike 2 step 2) ---
+    #
+    # The Loader detects whether the author wrote a `location:` field on
+    # each entity (records had_author_location), and on nested entities
+    # synthesises content["location"] as a cross-ref dict pointing at the
+    # parent. The synthesis overwrites any author-written location — the
+    # had_author_location flag preserves the violation for the validator
+    # to refuse later.
+
+    def test_nested_entity_location_synthesised(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{"deployment_id": 2, "name": "Child"}],
+        })
+        self.assertEqual(entities[1].content["location"], {
+            "deployment_file": "x.yaml",
+            "deployment_id": 1,
+        })
+
+    def test_nested_entity_had_author_location_false_when_absent(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{"deployment_id": 2, "name": "Child"}],
+        })
+        self.assertFalse(entities[1].had_author_location)
+
+    def test_nested_entity_had_author_location_true_when_present(self):
+        # Even `location: null` from the author counts — the flag tracks
+        # whether the YAML *had* the key, not what value it carried.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{
+                "deployment_id": 2, "name": "Child",
+                "location": None,
+            }],
+        })
+        self.assertTrue(entities[1].had_author_location)
+
+    def test_synthesised_location_overwrites_author_value(self):
+        # Author wrote a location; Loader still synthesises (the validator
+        # will refuse later via had_author_location), so the emitted
+        # content["location"] is the synthesised dict, not the author's.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{
+                "deployment_id": 2, "name": "Child",
+                "location": "I wrote something here",
+            }],
+        })
+        self.assertEqual(entities[1].content["location"], {
+            "deployment_file": "x.yaml",
+            "deployment_id": 1,
+        })
+        self.assertTrue(entities[1].had_author_location)
+
+    def test_top_level_entity_had_author_location_true_when_present(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Solo",
+            "location": None,
+        })
+        self.assertFalse(entities[0].is_nested)
+        self.assertTrue(entities[0].had_author_location)
+
+    def test_top_level_entity_had_author_location_false_when_absent(self):
+        # No `location:` key on the top-level mapping at all.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Solo",
+        })
+        self.assertFalse(entities[0].is_nested)
+        self.assertFalse(entities[0].had_author_location)
+
+    def test_top_level_entity_location_not_synthesised(self):
+        # Top-level entity's location is the author's responsibility;
+        # the Loader does not touch it. content["location"] stays None.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Solo",
+            "location": None,
+        })
+        self.assertIsNone(entities[0].content["location"])
+
+    def test_deeply_nested_location_points_at_immediate_parent(self):
+        # room (1) → chest (2) → key (3). Chest's location points at
+        # room; key's location points at chest, not at room.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Room",
+            "contents": [{
+                "deployment_id": 2, "name": "Chest",
+                "contents": [{"deployment_id": 3, "name": "Key"}],
+            }],
+        })
+        self.assertEqual(entities[1].content["location"], {
+            "deployment_file": "x.yaml",
+            "deployment_id": 1,
+        })
+        self.assertEqual(entities[2].content["location"], {
+            "deployment_file": "x.yaml",
+            "deployment_id": 2,
+        })
+
+    def test_synthesised_location_uses_parent_deployment_file(self):
+        # Sanity: deployment_file in the synthesised dict is the file the
+        # parent was loaded from (same as nested entity's path).
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Parent",
+            "contents": [{"deployment_id": 2, "name": "Child"}],
+        })
+        self.assertEqual(
+            entities[1].content["location"]["deployment_file"],
+            entities[0].path,
+        )
+
 
 class ValidatorTest(TestCase):
     """Verify Validator's per-entity predicates and per-file id index."""
@@ -930,9 +1184,17 @@ class ValidatorNameWellFormedTest(TestCase):
 
 
 class ValidatorLocationWellFormedTest(TestCase):
-    """Tier 1 (top-level only) — location is mandatory; must be null today."""
+    """Tier 1 — location is mandatory; null OR cross-ref dict accepted.
 
-    def _entity(self, content) -> LoadedEntity:
+    The cross-ref dict shape lands here in spike 2 step 3 alongside the
+    Loader's synthesis on nested entities (so nested entities — whose
+    location is now a Loader-synthesised cross-ref — can pass the same
+    predicate as top-level entities). Top-level entities can also use
+    the cross-ref shape to point at any same-file entity by its
+    deployment id; resolution lands as a separate Tier 4 check later.
+    """
+
+    def _entity(self, content, **kwargs) -> LoadedEntity:
         # Auto-inject the other mandatory Tier 1 fields except location.
         if isinstance(content, dict):
             defaults = {
@@ -943,7 +1205,7 @@ class ValidatorLocationWellFormedTest(TestCase):
             for key, default in defaults.items():
                 if key not in content:
                     content = {**content, key: default}
-        return LoadedEntity(location={}, content=content, path="a.yaml")
+        return LoadedEntity(location={}, content=content, path="a.yaml", **kwargs)
 
     def _validator(self):
         return Validator(Definitions(levels=("zone",)))
@@ -961,31 +1223,202 @@ class ValidatorLocationWellFormedTest(TestCase):
         v.validate([self._entity({"location": None})])
         self.assertEqual(v.errors, [])
 
-    def test_string_location_rejected_today(self):
-        # Cross-ref dicts and other non-null values are deferred to
-        # spike 4 — for now anything other than null is refused.
+    def test_string_location_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"location": "somewhere"})])
-        self.assertTrue(any("'location' must be null" in e for e in v.errors))
+        self.assertTrue(any(
+            "must be null or a cross-ref dict" in e for e in v.errors
+        ))
 
-    def test_dict_location_rejected_today(self):
+    def test_well_formed_cross_ref_dict_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"location": {
+            "deployment_file": "millholm/bakery.yaml",
+            "deployment_id": 1,
+        }})])
+        self.assertEqual(v.errors, [])
+
+    def test_cross_ref_zero_deployment_id_accepted(self):
+        # Non-negative includes zero, mirroring _check_deployment_id_well_formed.
+        v = self._validator()
+        v.validate([self._entity({"location": {
+            "deployment_file": "a.yaml",
+            "deployment_id": 0,
+        }})])
+        self.assertEqual(v.errors, [])
+
+    def test_cross_ref_missing_deployment_file_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"location": {"deployment_id": 5}})])
-        self.assertTrue(any("'location' must be null" in e for e in v.errors))
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_file" in e
+            for e in v.errors
+        ))
 
-    def test_top_level_predicates_registered_separately(self):
-        # The location predicate must live in TOP_LEVEL_PREDICATES, not
-        # PER_ENTITY_PREDICATES — when recursion lands, nested entities
-        # need to skip it. Guard this architectural split with a test.
+    def test_cross_ref_missing_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {"deployment_file": "a.yaml"}})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_id" in e
+            for e in v.errors
+        ))
+
+    def test_cross_ref_extra_keys_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "a.yaml",
+                "deployment_id": 1,
+                "comment": "annotation",
+            }})])
+        self.assertTrue(any("unexpected key" in e for e in v.errors))
+
+    def test_cross_ref_non_string_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": 7,
+                "deployment_id": 1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_file' must be a non-empty string" in e for e in v.errors
+        ))
+
+    def test_cross_ref_empty_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "   ",
+                "deployment_id": 1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_file' must be a non-empty string" in e for e in v.errors
+        ))
+
+    def test_cross_ref_non_int_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "a.yaml",
+                "deployment_id": "five",
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be an integer" in e for e in v.errors
+        ))
+
+    def test_cross_ref_bool_deployment_id_rejected(self):
+        # bool is an int subclass — must not be accepted.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "a.yaml",
+                "deployment_id": True,
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be an integer" in e for e in v.errors
+        ))
+
+    def test_cross_ref_negative_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "a.yaml",
+                "deployment_id": -1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be non-negative" in e for e in v.errors
+        ))
+
+    def test_location_predicate_is_per_entity(self):
+        # The TOP_LEVEL_PREDICATES split was collapsed in spike 2 step 3
+        # because the Loader synthesises a cross-ref `location:` on every
+        # nested entity, so the predicate applies uniformly. Guard the
+        # arrangement with a test.
         from evennia_world_builder.validator import _check_location_well_formed
         self.assertIn(
-            _check_location_well_formed, Validator.TOP_LEVEL_PREDICATES
-        )
-        self.assertNotIn(
             _check_location_well_formed, Validator.PER_ENTITY_PREDICATES
         )
+        self.assertFalse(hasattr(Validator, "TOP_LEVEL_PREDICATES"))
+
+
+class ValidatorNoAuthorLocationOnNestedTest(TestCase):
+    """Tier 1 — refuse author-written `location:` on nested entities."""
+
+    def _entity(self, *, is_nested, had_author_location, location_value=None) -> LoadedEntity:
+        # Build a minimally-valid entity content; the Loader's synthesised
+        # location: dict for a nested entity would normally be present
+        # (and the test exercises the predicate alone, not the Loader),
+        # so we set it to a well-formed default unless overridden.
+        synthesised = {
+            "deployment_file": "a.yaml",
+            "deployment_id": 99,
+        }
+        content = {
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "x",
+            "location": location_value if location_value is not None else synthesised,
+        }
+        return LoadedEntity(
+            location={}, content=content, path="a.yaml",
+            is_nested=is_nested,
+            had_author_location=had_author_location,
+        )
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_nested_with_author_location_refused(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(is_nested=True, had_author_location=True)])
+        self.assertTrue(any(
+            "nested entity declares 'location:'" in e for e in v.errors
+        ))
+
+    def test_nested_without_author_location_passes(self):
+        v = self._validator()
+        v.validate([self._entity(is_nested=True, had_author_location=False)])
+        self.assertEqual(v.errors, [])
+
+    def test_top_level_with_author_location_passes(self):
+        # Author writing `location:` on a top-level entity is correct usage —
+        # the predicate must not fire.
+        v = self._validator()
+        v.validate([self._entity(
+            is_nested=False, had_author_location=True,
+            location_value=None,
+        )])
+        self.assertEqual(v.errors, [])
+
+    def test_top_level_without_author_location_passes(self):
+        # In practice top-level entities always have had_author_location=True
+        # (otherwise _check_location_well_formed refuses for missing field).
+        # But the no-author-location predicate itself is purely about
+        # is_nested; verify it stays quiet for a top-level entity even
+        # when had_author_location=False.
+        v = self._validator()
+        # Build content without a `location` key at all, so the *other*
+        # predicate (_check_location_well_formed) is the one that refuses.
+        # We assert that the no-author-location finding isn't among the
+        # findings.
+        content = {
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "x",
+        }
+        entity = LoadedEntity(
+            location={}, content=content, path="a.yaml",
+            is_nested=False, had_author_location=False,
+        )
+        with self.assertRaises(ValidatorError):
+            v.validate([entity])
+        self.assertFalse(any(
+            "nested entity declares 'location:'" in e for e in v.errors
+        ))
 
 
 class ValidatorAttributesFieldShapeTest(TestCase):
@@ -1438,3 +1871,155 @@ class ValidatorTagsReservedCategoryTest(TestCase):
         v = self._validator()
         v.validate([self._entity([{"key": "wb_deployment_file"}])])
         self.assertEqual(v.errors, [])
+
+
+class BuilderTest(TestCase):
+    """Verify Builder.build's location resolution + in-build map behaviour.
+
+    Mocks ``evennia.utils.create.create_object`` and
+    ``evennia.utils.search.search_tag`` so the build pass can run without
+    a live Evennia DB. The Builder's job is orchestration — what it
+    decides to pass to ``create_object`` for ``location=`` is the focus
+    of these tests.
+    """
+
+    def _entity(
+        self, *, path="x.yaml", deployment_id=1, location=None,
+        is_nested=False, name="X", typeclass="ev.X",
+    ) -> LoadedEntity:
+        content = {
+            "deployment_id": deployment_id,
+            "name": name,
+            "typeclass": typeclass,
+            "location": location,
+        }
+        return LoadedEntity(
+            location={}, content=content, path=path, is_nested=is_nested,
+        )
+
+    def _builder(self):
+        return Builder(Definitions(levels=("zone",)))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_orphan_passes_none_as_location(self, mock_create, _mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity(deployment_id=1, location=None)])
+        self.assertEqual(mock_create.call_args_list[0].kwargs["location"], None)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_cross_ref_resolves_to_parent_obj(self, mock_create, _mock_search):
+        # Two entities: parent (id=1, orphan) and child (id=2, location
+        # cross-ref to parent). The child's create_object call must be
+        # passed the parent's just-built mock as `location=`.
+        parents_created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            parents_created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        parent = self._entity(deployment_id=1, location=None, name="Parent")
+        child = self._entity(
+            deployment_id=2, name="Child", is_nested=True,
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+        )
+
+        b = self._builder()
+        b.build([parent, child])
+
+        parent_obj = parents_created[0]
+        child_call = mock_create.call_args_list[1]
+        self.assertIs(child_call.kwargs["location"], parent_obj)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_cross_ref_raises(self, mock_create, _mock_search):
+        # No parent entity in the build set — child's cross-ref must fail.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        orphan_child = self._entity(
+            deployment_id=2, is_nested=True,
+            location={"deployment_file": "x.yaml", "deployment_id": 99},
+        )
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([orphan_child])
+        self.assertIn("no such entity has been built", str(ctx.exception))
+        self.assertIn("deployment_id=99", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_built_by_id_populated_after_build(self, mock_create, _mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([
+            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", deployment_id=2, location=None),
+            self._entity(path="b.yaml", deployment_id=1, location=None),
+        ])
+        self.assertEqual(set(b._built_by_id.keys()), {
+            ("a.yaml", 1), ("a.yaml", 2), ("b.yaml", 1),
+        })
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_built_by_id_resets_between_builds(self, mock_create, _mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity(deployment_id=1, location=None)])
+        self.assertEqual(len(b._built_by_id), 1)
+        b.build([self._entity(deployment_id=2, location=None)])
+        # Second build's map only has the second entity.
+        self.assertEqual(set(b._built_by_id.keys()), {("x.yaml", 2)})
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_deeply_nested_each_child_uses_immediate_parent(self, mock_create, _mock_search):
+        # room (1) → chest (2) → key (3). The key's location must
+        # resolve to the chest's mock object, not the room's.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        room = self._entity(deployment_id=1, location=None, name="Room")
+        chest = self._entity(
+            deployment_id=2, is_nested=True, name="Chest",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+        )
+        key = self._entity(
+            deployment_id=3, is_nested=True, name="Key",
+            location={"deployment_file": "x.yaml", "deployment_id": 2},
+        )
+
+        b = self._builder()
+        b.build([room, chest, key])
+
+        room_obj, chest_obj, _ = created
+        self.assertIs(mock_create.call_args_list[0].kwargs["location"], None)
+        self.assertIs(mock_create.call_args_list[1].kwargs["location"], room_obj)
+        self.assertIs(mock_create.call_args_list[2].kwargs["location"], chest_obj)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_same_file_forward_ref_refused(self, mock_create, _mock_search):
+        # Two top-level entities in the same file: A (id=1) declares a
+        # location ref pointing at B (id=2), but B is later in the build
+        # order. Single-pass build refuses; author must reorder.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        a = self._entity(
+            deployment_id=1, name="A",
+            location={"deployment_file": "x.yaml", "deployment_id": 2},
+        )
+        b_entity = self._entity(deployment_id=2, name="B", location=None)
+
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([a, b_entity])
+        self.assertIn("no such entity has been built", str(ctx.exception))

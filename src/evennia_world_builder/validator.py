@@ -174,20 +174,30 @@ def _check_name_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
+_LOCATION_CROSS_REF_KEYS = ("deployment_file", "deployment_id")
+
+
 def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     """Tier 1: every entity must declare ``location`` explicitly.
 
-    For spike 1 only ``location: null`` is supported (orphan placement —
-    rooms have no location, which is the dominant case). The Builder
-    can't yet resolve cross-ref dicts pointing at a parent object.
+    Two valid shapes:
 
-    Why mandate the field even when the only valid value is null?
-    Without an explicit declaration, an author who forgets the field
-    can't tell whether they meant "orphan" or "should have had a
-    parent and forgot." Once recursion lands (spike 2), nested
-    entities will get their location from their YAML position, but
-    top-level entities still need this — there's no structural signal
-    for "is this a placement or an orphan."
+    - ``null`` — orphan placement (the dominant case for top-level rooms).
+    - ``{deployment_file: <str>, deployment_id: <non-negative int>}`` — a
+      cross-reference dict pointing at the entity that contains this one.
+      The Loader synthesises this shape on every nested entity (a child
+      of a ``contents:`` block), pointing at the immediate parent;
+      authors writing this on a top-level entity to point at any
+      same-file entity is also valid by shape (resolution against the
+      ``seen_ids`` index lands as a separate Tier 4 check when it does).
+
+    Why mandate the field even when the value can be null? Without an
+    explicit declaration, an author who forgets the field can't tell
+    whether they meant "orphan" or "should have had a parent and forgot."
+
+    Strict on the cross-ref shape — both keys required, no extras
+    permitted. ``deployment_file`` must be a non-empty string,
+    ``deployment_id`` a non-negative integer (``bool`` excluded).
     """
     content = entity.content if isinstance(entity.content, dict) else {}
 
@@ -195,10 +205,71 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
         return f"{entity.path}: missing required field 'location'"
 
     value = content["location"]
-    if value is not None:
+    if value is None:
+        return None
+
+    if not isinstance(value, dict):
         return (
-            f"{entity.path}: 'location' must be null (spike 1 supports "
-            f"orphan placement only); got {type(value).__name__}"
+            f"{entity.path}: 'location' must be null or a cross-ref dict "
+            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
+        )
+
+    expected = set(_LOCATION_CROSS_REF_KEYS)
+    actual = set(value)
+    missing = expected - actual
+    if missing:
+        return (
+            f"{entity.path}: 'location' cross-ref missing required key(s): "
+            f"{sorted(missing)}"
+        )
+    extra = actual - expected
+    if extra:
+        return (
+            f"{entity.path}: 'location' cross-ref has unexpected key(s): "
+            f"{sorted(extra)}"
+        )
+
+    deployment_file = value["deployment_file"]
+    if not isinstance(deployment_file, str) or not deployment_file.strip():
+        return (
+            f"{entity.path}: 'location' cross-ref 'deployment_file' "
+            f"must be a non-empty string"
+        )
+
+    deployment_id = value["deployment_id"]
+    # bool is an int subclass — reject it explicitly so location:
+    # {deployment_id: true} doesn't slip through as a valid integer.
+    if not isinstance(deployment_id, int) or isinstance(deployment_id, bool):
+        return (
+            f"{entity.path}: 'location' cross-ref 'deployment_id' "
+            f"must be an integer, got {type(deployment_id).__name__}"
+        )
+    if deployment_id < 0:
+        return (
+            f"{entity.path}: 'location' cross-ref 'deployment_id' "
+            f"must be non-negative, got {deployment_id}"
+        )
+
+    return None
+
+
+def _check_no_author_location_on_nested(entity: LoadedEntity) -> str | None:
+    """Tier 1: nested entities must not declare ``location:`` themselves.
+
+    A nested entity's placement is implicit in the YAML structure that
+    nests it — the Loader synthesises ``content["location"]`` as a
+    cross-ref dict pointing at the parent. An author who writes
+    ``location:`` on a nested entity is either confused or fighting the
+    structural convention; refuse explicitly so the synthesis isn't a
+    silent overwrite.
+
+    The Loader records ``had_author_location`` from the *original*
+    mapping before any synthesis, so this predicate just reads the flag.
+    """
+    if entity.is_nested and entity.had_author_location:
+        return (
+            f"{entity.path}: nested entity declares 'location:' — placement "
+            f"is implicit (set by the parent in `contents:`)"
         )
     return None
 
@@ -428,31 +499,27 @@ class Validator:
     """
 
     # Stateless predicates that fire on every entity, top-level or nested.
-    # Nested entities (items inside `contents:` / `exits:`) inherit position
-    # from their parent's YAML structure, so anything purely about the
-    # entity itself — id, name, typeclass, tags — applies uniformly.
+    # The architecture briefly carried a TOP_LEVEL_PREDICATES split during
+    # spike 2 design (nested entities were going to skip location-related
+    # checks because they had no explicit location). The Loader now
+    # synthesises a cross-ref `location:` dict on every nested entity at
+    # flatten time, so `_check_location_well_formed` applies uniformly:
+    # top-level entities get author-written values, nested entities get
+    # Loader-synthesised values, both refused if malformed.
+    # `_check_no_author_location_on_nested` gates on the LoadedEntity's
+    # is_nested flag directly, no tier split needed.
     PER_ENTITY_PREDICATES = (
         _check_deployment_id_well_formed,
         _check_name_well_formed,
         _check_typeclass_well_formed,
+        _check_location_well_formed,
+        _check_no_author_location_on_nested,
         _check_description_field_shape,
         _check_aliases_field_shape,
         _check_locks_field_shape,
         _check_attributes_field_shape,
         _check_tags_field_shape,
         _check_tags_no_reserved_category,
-    )
-
-    # Stateless predicates that fire only on top-level entities. Today every
-    # entity loaded by the Loader is top-level, so the validator's loop runs
-    # these on everything; when recursion lands (spike 2) and the Loader
-    # starts producing nested entities, the loop will distinguish via a
-    # LoadedEntity flag and skip these for nested ones — a nested entity's
-    # location is the YAML structure that nests it, so the field must NOT
-    # appear on nested entities (to be enforced by a separate predicate
-    # added at that time).
-    TOP_LEVEL_PREDICATES = (
-        _check_location_well_formed,
     )
 
     EVENNIA_ONLY_PREDICATES = (
@@ -500,14 +567,10 @@ class Validator:
     def _active_predicates(self) -> tuple:
         """The predicate tuple appropriate for the current caller context.
 
-        Tier 1 always runs (PER_ENTITY_PREDICATES + TOP_LEVEL_PREDICATES);
-        Tier 3 (Evennia-runtime) opts in via ``evennia_runtime=True``.
-
-        Today every entity is top-level (recursion lands in spike 2), so
-        TOP_LEVEL_PREDICATES applies uniformly; once nested entities exist,
-        callers will route nested ones through a path that omits this set.
+        Tier 1 (PER_ENTITY_PREDICATES) always runs; Tier 3 (Evennia-runtime)
+        opts in via ``evennia_runtime=True``.
         """
-        active = self.PER_ENTITY_PREDICATES + self.TOP_LEVEL_PREDICATES
+        active = self.PER_ENTITY_PREDICATES
         if self.evennia_runtime:
             active = active + self.EVENNIA_ONLY_PREDICATES
         return active
