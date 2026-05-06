@@ -101,15 +101,25 @@ def _filter_by_query(entities: list, query: dict) -> list:
     ]
 
 
-def _run_validator(caller, definitions, entities, refusal_label) -> bool:
+def _run_validator(
+    caller, definitions, entities, refusal_label, *,
+    resolve_cross_refs: bool,
+) -> bool:
     """Run a Validator pass over entities. Surface every message via caller.
 
     Returns True on a clean pass, False if the validator refused. Callers
     should return early on False. wb_build runs inside Evennia, so the
     validator gets evennia_runtime=True (Tier 3 predicates fire — e.g.
-    typeclass-resolvable).
+    typeclass-resolvable). ``resolve_cross_refs`` is True only for the
+    whole-repo pre-validation path; scope-only validation trusts CI for
+    cross-ref resolution and skips Tier 4 (its seen_ids index would be
+    incomplete and produce false-positive misses on cross-file refs).
     """
-    validator = Validator(definitions, evennia_runtime=True)
+    validator = Validator(
+        definitions,
+        evennia_runtime=True,
+        resolve_cross_refs=resolve_cross_refs,
+    )
     try:
         validator.validate(entities)
     except ValidatorError as e:
@@ -242,7 +252,10 @@ class CmdWBBuild(BaseCommand):
                 f"wb_build: pre-validation loaded {len(all_entities)} "
                 f"entit{'y' if len(all_entities) == 1 else 'ies'} (whole repo)"
             )
-            if not _run_validator(caller, definitions, all_entities, "pre-validation failed"):
+            if not _run_validator(
+                caller, definitions, all_entities, "pre-validation failed",
+                resolve_cross_refs=True,
+            ):
                 return
 
             entities = _filter_by_query(all_entities, query)
@@ -282,7 +295,10 @@ class CmdWBBuild(BaseCommand):
                 f"wb_build: Loader returned {len(entities)} entit"
                 f"{'y' if len(entities) == 1 else 'ies'}"
             )
-            if not _run_validator(caller, definitions, entities, "validation failed"):
+            if not _run_validator(
+                caller, definitions, entities, "validation failed",
+                resolve_cross_refs=False,
+            ):
                 return
 
         for i, entity in enumerate(entities, 1):

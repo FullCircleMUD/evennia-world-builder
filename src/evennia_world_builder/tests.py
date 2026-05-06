@@ -875,6 +875,136 @@ class LoaderTest(TestCase):
             entities[0].path,
         )
 
+    # --- exits: block flattening (spike 4 step 1) ---
+    #
+    # The Loader walks `exits:` blocks identically to `contents:` blocks —
+    # both flatten into LoadedEntity records with is_nested=True and a
+    # synthesised location: cross-ref pointing at the parent. The block
+    # name is purely author-organizational; downstream code (validator,
+    # Builder) tells exits from non-exits via typeclass + destination
+    # presence, not via which block the entity came from.
+
+    def test_exits_block_flattens_like_contents(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [{
+                "deployment_id": 2, "name": "north",
+                "destination": {
+                    "deployment_file": "millholm/inn.yaml",
+                    "deployment_id": 1,
+                },
+            }],
+        })
+        self.assertEqual(len(entities), 2)
+        self.assertEqual([e.is_nested for e in entities], [False, True])
+        self.assertEqual([e.content["name"] for e in entities], ["Bakery", "north"])
+
+    def test_exits_block_synthesises_location(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+        })
+        self.assertEqual(entities[1].content["location"], {
+            "deployment_file": "x.yaml",
+            "deployment_id": 1,
+        })
+
+    def test_exits_key_removed_from_parent_content(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "description": "preserved",
+            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+        })
+        self.assertNotIn("exits", entities[0].content)
+        self.assertEqual(entities[0].content["description"], "preserved")
+
+    def test_exits_block_preserves_destination_field(self):
+        # The Loader doesn't touch destination — it's authored on the exit
+        # entity and passes through as-is for the validator and Builder.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [{
+                "deployment_id": 2, "name": "north",
+                "destination": {
+                    "deployment_file": "millholm/inn.yaml",
+                    "deployment_id": 1,
+                },
+            }],
+        })
+        self.assertEqual(entities[1].content["destination"], {
+            "deployment_file": "millholm/inn.yaml",
+            "deployment_id": 1,
+        })
+
+    def test_both_contents_and_exits_blocks_flatten(self):
+        # Author writes both blocks; the Loader walks contents first then
+        # exits (consistent ordering, regardless of YAML key order).
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "contents": [{"deployment_id": 2, "name": "chest"}],
+            "exits": [{
+                "deployment_id": 3, "name": "north",
+                "destination": {"deployment_file": "x.yaml", "deployment_id": 1},
+            }],
+        })
+        self.assertEqual(len(entities), 3)
+        self.assertEqual([e.is_nested for e in entities], [False, True, True])
+        self.assertEqual(
+            [e.content["name"] for e in entities],
+            ["Bakery", "chest", "north"],
+        )
+        # Both children get synthesised location pointing at the parent.
+        self.assertEqual(entities[1].content["location"]["deployment_id"], 1)
+        self.assertEqual(entities[2].content["location"]["deployment_id"], 1)
+
+    def test_exits_block_empty_list_no_op(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [],
+        })
+        self.assertEqual(len(entities), 1)
+        self.assertNotIn("exits", entities[0].content)
+
+    def test_malformed_exits_not_a_list(self):
+        # Same defensive behaviour as malformed contents — skip recursion,
+        # don't crash. Validator catches typeclass/shape mistakes downstream.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": "oops",
+        })
+        self.assertEqual(len(entities), 1)
+        self.assertFalse(entities[0].is_nested)
+
+    def test_malformed_exits_non_mapping_child(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": ["oops", {"deployment_id": 2, "name": "north", "destination": {}}],
+        })
+        self.assertEqual(len(entities), 2)
+        self.assertEqual([e.is_nested for e in entities], [False, True])
+        self.assertEqual(entities[1].content["name"], "north")
+
+    def test_nested_exit_had_author_location_false_when_absent(self):
+        # Same `had_author_location` recording applies to exits-block
+        # children: validator can later refuse author-written location on
+        # any nested entity uniformly.
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+        })
+        self.assertFalse(entities[1].had_author_location)
+
+    def test_nested_exit_had_author_location_true_when_present(self):
+        entities = self._load_yaml({
+            "deployment_id": 1, "name": "Bakery",
+            "exits": [{
+                "deployment_id": 2, "name": "north",
+                "destination": {},
+                "location": None,
+            }],
+        })
+        self.assertTrue(entities[1].had_author_location)
+
 
 class ValidatorTest(TestCase):
     """Verify Validator's per-entity predicates and per-file id index."""
@@ -1084,6 +1214,124 @@ class ValidatorTypeclassResolvableTest(TestCase):
         v = Validator(self._defs(), evennia_runtime=True)
         v.validate([self._entity_with_typeclass("os.PathLike")])
         self.assertEqual(v.errors, [])
+
+
+class ValidatorDestinationTypeclassTest(TestCase):
+    """Tier 3 — typeclass-aware destination required/forbidden predicates.
+
+    Two paired predicates:
+      - typeclass inherits DefaultExit ⇒ destination required
+      - typeclass does NOT inherit DefaultExit ⇒ destination forbidden
+
+    Both run only with evennia_runtime=True (registered in
+    EVENNIA_ONLY_PREDICATES). wb_build sets that flag; wb-validate
+    leaves it False, so the CLI gets shape checks only.
+    """
+
+    _DEFAULT_EXIT = "evennia.objects.objects.DefaultExit"
+    _DEFAULT_OBJECT = "evennia.objects.objects.DefaultObject"
+
+    def _entity(self, content) -> LoadedEntity:
+        # Inject Tier 1 mandatories plus a non-null cross-ref location so
+        # `_check_location_not_null_when_destination_present` doesn't fire
+        # on tests that aren't about it.
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "name": "x",
+                "location": {
+                    "deployment_file": "a.yaml",
+                    "deployment_id": 99,
+                },
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self, *, evennia_runtime=True):
+        return Validator(Definitions(levels=("zone",)), evennia_runtime=evennia_runtime)
+
+    # --- four-cell behaviour matrix -----------------------------------
+
+    def test_exit_typeclass_with_destination_passes(self):
+        v = self._validator()
+        v.validate([self._entity({
+            "typeclass": self._DEFAULT_EXIT,
+            "destination": {
+                "deployment_file": "millholm/inn.yaml",
+                "deployment_id": 1,
+            },
+        })])
+        self.assertEqual(v.errors, [])
+
+    def test_exit_typeclass_without_destination_refused(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"typeclass": self._DEFAULT_EXIT})])
+        self.assertTrue(any(
+            "inherits from DefaultExit" in e and "destination" in e
+            for e in v.errors
+        ))
+
+    def test_non_exit_typeclass_with_destination_refused(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({
+                "typeclass": self._DEFAULT_OBJECT,
+                "destination": {
+                    "deployment_file": "millholm/inn.yaml",
+                    "deployment_id": 1,
+                },
+            })])
+        self.assertTrue(any(
+            "does not inherit from DefaultExit" in e for e in v.errors
+        ))
+
+    def test_non_exit_typeclass_without_destination_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"typeclass": self._DEFAULT_OBJECT, "location": None})])
+        self.assertEqual(v.errors, [])
+
+    # --- gating: predicates only run with evennia_runtime=True --------
+
+    def test_skipped_when_evennia_runtime_false(self):
+        # The Tier 3 predicates must not fire when the caller (e.g.
+        # wb-validate CLI) hasn't asserted Evennia-runtime availability.
+        v = self._validator(evennia_runtime=False)
+        v.validate([self._entity({"typeclass": self._DEFAULT_EXIT})])
+        # No findings about destination required/forbidden — only Tier 1/2 ran.
+        self.assertFalse(any(
+            "DefaultExit" in e for e in v.errors
+        ))
+
+    # --- defensive skips: avoid double-reporting with other predicates -
+
+    def test_skips_when_typeclass_not_a_string(self):
+        # Tier 1's _check_typeclass_well_formed catches the shape problem;
+        # the Tier 3 predicates skip cleanly so the operator gets one
+        # finding for the typeclass shape, not three.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"typeclass": 7})])
+        self.assertFalse(any(
+            "DefaultExit" in e for e in v.errors
+        ))
+
+    def test_skips_when_typeclass_unimportable(self):
+        # Tier 3's _check_typeclass_resolvable catches the import failure;
+        # the destination predicates skip cleanly.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({
+                "typeclass": "totally.bogus.module.Class",
+            })])
+        self.assertTrue(any(
+            "could not be imported" in e for e in v.errors
+        ))
+        self.assertFalse(any(
+            "DefaultExit" in e for e in v.errors
+        ))
 
 
 class ValidatorTypeclassWellFormedTest(TestCase):
@@ -1342,6 +1590,244 @@ class ValidatorLocationWellFormedTest(TestCase):
             _check_location_well_formed, Validator.PER_ENTITY_PREDICATES
         )
         self.assertFalse(hasattr(Validator, "TOP_LEVEL_PREDICATES"))
+
+
+class ValidatorDestinationWellFormedTest(TestCase):
+    """Tier 1 — `destination:` (when present) is a strict cross-ref dict.
+
+    Mirrors the cross-ref shape check on `location:` — same shared helper
+    (`_check_cross_ref_dict_shape`) drives both. The difference between
+    location and destination at validate time is that `location:` accepts
+    null (orphan) while `destination:` does not (presence implies an
+    exit, which must point somewhere).
+    """
+
+    def _entity(self, content) -> LoadedEntity:
+        # Inject the other Tier 1 mandatory fields plus a non-null
+        # location so _check_location_not_null_when_destination_present
+        # doesn't fire on tests that aren't about it.
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultExit",
+                "name": "north",
+                "location": {
+                    "deployment_file": "a.yaml",
+                    "deployment_id": 99,
+                },
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_destination_absent_passes(self):
+        # destination: is optional at this layer — Tier 3 (step 3) decides
+        # whether the typeclass requires it. Tier 1 just shape-checks.
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_well_formed_destination_dict_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"destination": {
+            "deployment_file": "millholm/inn.yaml",
+            "deployment_id": 1,
+        }})])
+        self.assertEqual(v.errors, [])
+
+    def test_destination_zero_deployment_id_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"destination": {
+            "deployment_file": "a.yaml",
+            "deployment_id": 0,
+        }})])
+        self.assertEqual(v.errors, [])
+
+    def test_destination_string_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": "somewhere"})])
+        self.assertTrue(any(
+            "'destination' must be a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_destination_null_rejected(self):
+        # null is fine for location (orphan) but never for destination.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": None})])
+        self.assertTrue(any(
+            "'destination' must be a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_destination_missing_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {"deployment_id": 5}})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_file" in e
+            for e in v.errors
+        ))
+
+    def test_destination_missing_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {"deployment_file": "a.yaml"}})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_id" in e
+            for e in v.errors
+        ))
+
+    def test_destination_extra_keys_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": "a.yaml",
+                "deployment_id": 1,
+                "comment": "annotation",
+            }})])
+        self.assertTrue(any("unexpected key" in e for e in v.errors))
+
+    def test_destination_non_string_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": 7,
+                "deployment_id": 1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_file' must be a non-empty string" in e for e in v.errors
+        ))
+
+    def test_destination_empty_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": "   ",
+                "deployment_id": 1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_file' must be a non-empty string" in e for e in v.errors
+        ))
+
+    def test_destination_non_int_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": "a.yaml",
+                "deployment_id": "five",
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be an integer" in e for e in v.errors
+        ))
+
+    def test_destination_bool_deployment_id_rejected(self):
+        # bool is an int subclass — reject it explicitly.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": "a.yaml",
+                "deployment_id": True,
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be an integer" in e for e in v.errors
+        ))
+
+    def test_destination_negative_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"destination": {
+                "deployment_file": "a.yaml",
+                "deployment_id": -1,
+            }})])
+        self.assertTrue(any(
+            "'deployment_id' must be non-negative" in e for e in v.errors
+        ))
+
+
+class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
+    """Tier 1 — entity with `destination:` must have non-null `location:`.
+
+    Any entity carrying destination is an exit (regardless of whether
+    nested in an `exits:` block or authored top-level as a connector);
+    an exit has to live in a room. `location: null` contradicts the
+    presence of `destination:`.
+    """
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultExit",
+                "name": "north",
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_destination_with_null_location_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({
+                "destination": {
+                    "deployment_file": "millholm/inn.yaml",
+                    "deployment_id": 1,
+                },
+                "location": None,
+            })])
+        self.assertTrue(any(
+            "an exit must be in a room" in e for e in v.errors
+        ))
+
+    def test_destination_with_cross_ref_location_passes(self):
+        v = self._validator()
+        v.validate([self._entity({
+            "destination": {
+                "deployment_file": "millholm/inn.yaml",
+                "deployment_id": 1,
+            },
+            "location": {
+                "deployment_file": "millholm/bakery.yaml",
+                "deployment_id": 1,
+            },
+        })])
+        self.assertEqual(v.errors, [])
+
+    def test_no_destination_with_null_location_passes(self):
+        # Regression: regular orphan rooms still pass.
+        v = self._validator()
+        v.validate([self._entity({"location": None})])
+        self.assertEqual(v.errors, [])
+
+    def test_destination_without_location_doesnt_double_report(self):
+        # Missing-location is handled by _check_location_well_formed; this
+        # predicate stays quiet so the operator sees one finding, not two,
+        # for the same authoring mistake.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({
+                "destination": {
+                    "deployment_file": "a.yaml",
+                    "deployment_id": 1,
+                },
+                # no location key at all
+            })])
+        # Exactly one finding mentions "location" — the missing-field one.
+        # The "exit must be in a room" finding must not also fire.
+        self.assertFalse(any(
+            "an exit must be in a room" in e for e in v.errors
+        ))
+        self.assertTrue(any(
+            "missing required field 'location'" in e for e in v.errors
+        ))
 
 
 class ValidatorNoAuthorLocationOnNestedTest(TestCase):
@@ -1871,6 +2357,155 @@ class ValidatorTagsReservedCategoryTest(TestCase):
         v = self._validator()
         v.validate([self._entity([{"key": "wb_deployment_file"}])])
         self.assertEqual(v.errors, [])
+
+
+class ValidatorCrossRefResolutionTest(TestCase):
+    """Tier 4 — `_check_cross_refs` post-loop phase against `seen_ids`.
+
+    Runs only when the caller passes `resolve_cross_refs=True` to
+    Validator.__init__. `wb_build` whole-repo pre-validation and
+    `wb-validate` set the flag; tests default off.
+    """
+
+    def _entity(self, *, path, deployment_id, location=None, destination=None) -> LoadedEntity:
+        content = {
+            "deployment_id": deployment_id,
+            "name": "x",
+            "typeclass": "evennia.objects.objects.DefaultObject",
+            "location": location,
+        }
+        if destination is not None:
+            content["destination"] = destination
+        return LoadedEntity(location={}, content=content, path=path)
+
+    def _validator(self, *, resolve_cross_refs=True):
+        return Validator(
+            Definitions(levels=("zone",)),
+            resolve_cross_refs=resolve_cross_refs,
+        )
+
+    # --- gating ----------------------------------------------------------
+
+    def test_skipped_when_resolve_cross_refs_false(self):
+        # With the flag off, an unresolved cross-ref produces no Tier 4
+        # finding. (Tier 1's shape check already passed; the dangling
+        # ref is invisible without Tier 4.)
+        v = self._validator(resolve_cross_refs=False)
+        v.validate([self._entity(
+            path="bakery.yaml", deployment_id=1,
+            location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+        )])
+        self.assertFalse(any("does not resolve" in e for e in v.errors))
+
+    # --- happy path -----------------------------------------------------
+
+    def test_location_cross_ref_resolves_within_same_file(self):
+        # Author writes a top-level entity placed inside another top-level
+        # entity in the same file. Both seen_ids entries land before
+        # Tier 4 runs, so the lookup hits.
+        v = self._validator()
+        v.validate([
+            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(
+                path="a.yaml", deployment_id=2,
+                location={"deployment_file": "a.yaml", "deployment_id": 1},
+            ),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_destination_cross_ref_resolves_across_files(self):
+        v = self._validator()
+        v.validate([
+            self._entity(path="bakery.yaml", deployment_id=1, location=None),
+            self._entity(path="inn.yaml", deployment_id=1, location=None),
+            self._entity(
+                path="bakery.yaml", deployment_id=2,
+                location={"deployment_file": "bakery.yaml", "deployment_id": 1},
+                destination={"deployment_file": "inn.yaml", "deployment_id": 1},
+            ),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_forward_ref_within_same_file_resolves(self):
+        # Entity A (id=1) declares location pointing at entity B (id=2)
+        # which appears later in the entity list. seen_ids is fully
+        # built before Tier 4 runs, so the forward ref still resolves.
+        # (Builder's same-file forward-ref refusal is a separate
+        # decision at create time, not a Tier 4 concern.)
+        v = self._validator()
+        v.validate([
+            self._entity(
+                path="a.yaml", deployment_id=1,
+                location={"deployment_file": "a.yaml", "deployment_id": 2},
+            ),
+            self._entity(path="a.yaml", deployment_id=2, location=None),
+        ])
+        self.assertEqual(v.errors, [])
+
+    # --- miss paths -----------------------------------------------------
+
+    def test_unresolved_location_reported(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="bakery.yaml", deployment_id=1,
+                location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            )])
+        self.assertTrue(any(
+            "'location' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_unresolved_destination_reported(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="bakery.yaml", deployment_id=1,
+                location={"deployment_file": "bakery.yaml", "deployment_id": 1},
+                destination={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            )])
+        self.assertTrue(any(
+            "'destination' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_target_file_present_but_id_missing_reported(self):
+        # Target file is in seen_ids but the specific deployment_id
+        # isn't — still a miss.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._entity(path="a.yaml", deployment_id=1, location=None),
+                self._entity(
+                    path="b.yaml", deployment_id=1,
+                    location={"deployment_file": "a.yaml", "deployment_id": 99},
+                ),
+            ])
+        self.assertTrue(any(
+            "deployment_id=99" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    # --- defensive: don't double-report -------------------------------
+
+    def test_malformed_cross_ref_skipped_no_double_report(self):
+        # Tier 1's _check_destination_well_formed already flags the bad
+        # shape. Tier 4 must skip cleanly so the operator doesn't see
+        # both a shape error AND a "doesn't resolve" error for the same
+        # field.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="a.yaml", deployment_id=1,
+                location=None,
+                destination="not a dict",
+            )])
+        self.assertTrue(any(
+            "'destination' must be a cross-ref dict" in e for e in v.errors
+        ))
+        self.assertFalse(any(
+            "does not resolve" in e for e in v.errors
+        ))
 
 
 class BuilderTest(TestCase):

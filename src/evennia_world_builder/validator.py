@@ -174,7 +174,60 @@ def _check_name_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
-_LOCATION_CROSS_REF_KEYS = ("deployment_file", "deployment_id")
+_CROSS_REF_KEYS = ("deployment_file", "deployment_id")
+
+
+def _check_cross_ref_dict_shape(value, entity_path: str, field_name: str) -> str | None:
+    """Validate that a value is a strict ``{deployment_file, deployment_id}`` dict.
+
+    Caller has already established that ``value`` is a dict (the
+    null-or-other-shape decision is field-specific and stays in the
+    calling predicate). This helper just enforces the strict shape:
+    both keys required, no extras, ``deployment_file`` a non-empty
+    string, ``deployment_id`` a non-negative integer (``bool`` excluded).
+
+    Used by ``_check_location_well_formed`` and
+    ``_check_destination_well_formed`` — both fields carry cross-ref
+    dicts with identical structure, only the per-field "what counts as
+    valid" decision differs.
+    """
+    expected = set(_CROSS_REF_KEYS)
+    actual = set(value)
+    missing = expected - actual
+    if missing:
+        return (
+            f"{entity_path}: '{field_name}' cross-ref missing required key(s): "
+            f"{sorted(missing)}"
+        )
+    extra = actual - expected
+    if extra:
+        return (
+            f"{entity_path}: '{field_name}' cross-ref has unexpected key(s): "
+            f"{sorted(extra)}"
+        )
+
+    deployment_file = value["deployment_file"]
+    if not isinstance(deployment_file, str) or not deployment_file.strip():
+        return (
+            f"{entity_path}: '{field_name}' cross-ref 'deployment_file' "
+            f"must be a non-empty string"
+        )
+
+    deployment_id = value["deployment_id"]
+    # bool is an int subclass — reject it explicitly so {deployment_id: true}
+    # doesn't slip through as a valid integer.
+    if not isinstance(deployment_id, int) or isinstance(deployment_id, bool):
+        return (
+            f"{entity_path}: '{field_name}' cross-ref 'deployment_id' "
+            f"must be an integer, got {type(deployment_id).__name__}"
+        )
+    if deployment_id < 0:
+        return (
+            f"{entity_path}: '{field_name}' cross-ref 'deployment_id' "
+            f"must be non-negative, got {deployment_id}"
+        )
+
+    return None
 
 
 def _check_location_well_formed(entity: LoadedEntity) -> str | None:
@@ -186,18 +239,14 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     - ``{deployment_file: <str>, deployment_id: <non-negative int>}`` — a
       cross-reference dict pointing at the entity that contains this one.
       The Loader synthesises this shape on every nested entity (a child
-      of a ``contents:`` block), pointing at the immediate parent;
-      authors writing this on a top-level entity to point at any
-      same-file entity is also valid by shape (resolution against the
+      of a ``contents:`` or ``exits:`` block), pointing at the immediate
+      parent; top-level entities can also declare it directly to place
+      themselves inside another entity (resolution against the
       ``seen_ids`` index lands as a separate Tier 4 check when it does).
 
     Why mandate the field even when the value can be null? Without an
     explicit declaration, an author who forgets the field can't tell
     whether they meant "orphan" or "should have had a parent and forgot."
-
-    Strict on the cross-ref shape — both keys required, no extras
-    permitted. ``deployment_file`` must be a non-empty string,
-    ``deployment_id`` a non-negative integer (``bool`` excluded).
     """
     content = entity.content if isinstance(entity.content, dict) else {}
 
@@ -214,42 +263,61 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
             f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
         )
 
-    expected = set(_LOCATION_CROSS_REF_KEYS)
-    actual = set(value)
-    missing = expected - actual
-    if missing:
+    return _check_cross_ref_dict_shape(value, entity.path, "location")
+
+
+def _check_destination_well_formed(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``destination:`` (when present) is a cross-ref dict.
+
+    Optional field — absence is fine (it just means the entity is not an
+    exit). When present, must be a strict ``{deployment_file,
+    deployment_id}`` cross-ref dict. The dict shape is identical to
+    ``location:``'s cross-ref shape; the difference between the two
+    fields is that ``location:`` accepts null (orphan) while
+    ``destination:`` does not (an exit always points somewhere).
+
+    The "is the entity actually meant to be an exit" question — i.e. is
+    it inconsistent for this typeclass to have / lack a destination — is
+    a separate Tier 3 concern; this Tier 1 predicate just shape-checks
+    what's present.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "destination" not in content:
+        return None
+
+    value = content["destination"]
+    if not isinstance(value, dict):
         return (
-            f"{entity.path}: 'location' cross-ref missing required key(s): "
-            f"{sorted(missing)}"
-        )
-    extra = actual - expected
-    if extra:
-        return (
-            f"{entity.path}: 'location' cross-ref has unexpected key(s): "
-            f"{sorted(extra)}"
+            f"{entity.path}: 'destination' must be a cross-ref dict "
+            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
         )
 
-    deployment_file = value["deployment_file"]
-    if not isinstance(deployment_file, str) or not deployment_file.strip():
-        return (
-            f"{entity.path}: 'location' cross-ref 'deployment_file' "
-            f"must be a non-empty string"
-        )
+    return _check_cross_ref_dict_shape(value, entity.path, "destination")
 
-    deployment_id = value["deployment_id"]
-    # bool is an int subclass — reject it explicitly so location:
-    # {deployment_id: true} doesn't slip through as a valid integer.
-    if not isinstance(deployment_id, int) or isinstance(deployment_id, bool):
-        return (
-            f"{entity.path}: 'location' cross-ref 'deployment_id' "
-            f"must be an integer, got {type(deployment_id).__name__}"
-        )
-    if deployment_id < 0:
-        return (
-            f"{entity.path}: 'location' cross-ref 'deployment_id' "
-            f"must be non-negative, got {deployment_id}"
-        )
 
+def _check_location_not_null_when_destination_present(entity: LoadedEntity) -> str | None:
+    """Tier 1: an entity with ``destination:`` must have non-null ``location:``.
+
+    Any entity carrying ``destination:`` is an exit (whether nested in
+    an ``exits:`` block, or a top-level connector entity). An exit must
+    live in a room — ``location: null`` would orphan it, making it
+    unreachable.
+
+    Defensive: only fires when ``location:`` is *present and null*.
+    A missing ``location`` field is caught by
+    ``_check_location_well_formed`` as a separate finding; this
+    predicate stays quiet on that case to avoid double-reporting.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "destination" not in content:
+        return None
+    if "location" not in content:
+        return None  # let _check_location_well_formed handle the missing field
+    if content["location"] is None:
+        return (
+            f"{entity.path}: entity declares 'destination:' but 'location:' is null — "
+            f"an exit must be in a room"
+        )
     return None
 
 
@@ -434,6 +502,91 @@ def _check_typeclass_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
+def _resolve_typeclass(typeclass: str):
+    """Best-effort import of a dotted typeclass path. Returns class or None.
+
+    None means the path is malformed or the import / attribute lookup
+    failed. Tier 3's ``_check_typeclass_resolvable`` predicate is the
+    one that surfaces those failures as findings; the other Tier 3
+    predicates that consume this helper skip cleanly when it returns
+    None to avoid double-reporting.
+    """
+    module_path, _, class_name = typeclass.rpartition(".")
+    if not module_path or not class_name:
+        return None
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError:
+        return None
+    return getattr(module, class_name, None)
+
+
+def _check_destination_required_for_exit_typeclass(entity: LoadedEntity) -> str | None:
+    """Tier 3: typeclass inheriting from ``DefaultExit`` ⇒ ``destination:`` required.
+
+    Resolves the entity's typeclass; if it inherits from Evennia's
+    ``DefaultExit``, ``destination:`` must be present (well-formed shape
+    is checked separately by Tier 1's ``_check_destination_well_formed``).
+
+    Skips silently on shape problems with ``typeclass`` (covered by
+    Tier 1's ``_check_typeclass_well_formed``) or import errors
+    (covered by Tier 3's ``_check_typeclass_resolvable``) so the
+    operator sees one finding per authoring mistake, not several.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    typeclass = content.get("typeclass")
+    if not isinstance(typeclass, str) or not typeclass.strip():
+        return None
+
+    cls = _resolve_typeclass(typeclass)
+    if cls is None:
+        return None
+
+    from evennia.objects.objects import DefaultExit
+    if not issubclass(cls, DefaultExit):
+        return None
+
+    if "destination" not in content:
+        return (
+            f"{entity.path}: typeclass {typeclass!r} inherits from DefaultExit "
+            f"but no 'destination:' is set — exits must declare a destination"
+        )
+    return None
+
+
+def _check_destination_forbidden_for_non_exit_typeclass(entity: LoadedEntity) -> str | None:
+    """Tier 3: typeclass NOT inheriting from ``DefaultExit`` ⇒ ``destination:`` forbidden.
+
+    Catches the inverse mistake — author wrote a destination on a
+    non-exit entity (typo: meant to write description, or copy-pasted
+    from an exit and forgot to remove the field). Lower-frequency than
+    the missing-destination case but cheap to add and gives the author
+    a clear validate-time error instead of a quietly-broken object.
+
+    Skips silently on the same shape/import problems as the inverse
+    predicate, for the same single-finding reason.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    typeclass = content.get("typeclass")
+    if not isinstance(typeclass, str) or not typeclass.strip():
+        return None
+
+    cls = _resolve_typeclass(typeclass)
+    if cls is None:
+        return None
+
+    from evennia.objects.objects import DefaultExit
+    if issubclass(cls, DefaultExit):
+        return None
+
+    if "destination" in content:
+        return (
+            f"{entity.path}: typeclass {typeclass!r} does not inherit from DefaultExit "
+            f"but 'destination:' is set — non-exits must not declare a destination"
+        )
+    return None
+
+
 def _check_typeclass_resolvable(entity: LoadedEntity) -> str | None:
     """Tier 3: the declared typeclass dotted-path must be importable.
 
@@ -513,6 +666,8 @@ class Validator:
         _check_name_well_formed,
         _check_typeclass_well_formed,
         _check_location_well_formed,
+        _check_destination_well_formed,
+        _check_location_not_null_when_destination_present,
         _check_no_author_location_on_nested,
         _check_description_field_shape,
         _check_aliases_field_shape,
@@ -524,11 +679,25 @@ class Validator:
 
     EVENNIA_ONLY_PREDICATES = (
         _check_typeclass_resolvable,
+        _check_destination_required_for_exit_typeclass,
+        _check_destination_forbidden_for_non_exit_typeclass,
     )
 
-    def __init__(self, definitions: Definitions, evennia_runtime: bool = False):
+    def __init__(
+        self, definitions: Definitions, *,
+        evennia_runtime: bool = False,
+        resolve_cross_refs: bool = False,
+    ):
         self.definitions = definitions
         self.evennia_runtime = evennia_runtime
+        # When True, run the Tier 4 deferred phase: walk every entity's
+        # location/destination cross-refs and verify they resolve in the
+        # seen_ids index. Caller asserts they're passing whole-repo
+        # entities (the only case where unresolved-ref findings are
+        # meaningful). wb_build pre-validation and wb-validate both
+        # pass True; tests default False to keep narrow-scope cases
+        # working.
+        self.resolve_cross_refs = resolve_cross_refs
         self.messages: list[str] = []
         self.errors: list[str] = []
         self.seen_ids: dict[str, set[int]] = {}
@@ -550,6 +719,9 @@ class Validator:
                 # (e.g. trying to record a non-integer in seen_ids).
                 continue
             self._check_and_record_unique_id(entity)
+
+        if self.resolve_cross_refs:
+            self._check_cross_refs(entities)
 
         if self.errors:
             n = len(self.errors)
@@ -584,6 +756,44 @@ class Validator:
                 self._record_finding(finding)
                 clean = False
         return clean
+
+    def _check_cross_refs(self, entities: list) -> None:
+        """Tier 4: every cross-ref must resolve in the seen_ids index.
+
+        Runs after the per-entity loop, when ``self.seen_ids`` reflects
+        every clean entity in the build set. For each entity, looks at
+        ``content["location"]`` and ``content["destination"]``; if either
+        is a well-shaped cross-ref dict, verifies the
+        ``(deployment_file, deployment_id)`` pair appears in the index.
+
+        Defensive about malformed shapes — ``isinstance(ref, dict)`` and
+        a key-presence check skip any cross-ref that Tier 1 has already
+        flagged. Tier 4 records one finding per unresolved well-shaped
+        ref; mistakes Tier 1 caught don't double-report here.
+
+        Same-file forward refs resolve correctly: by the time this
+        method runs, every entity has been added to ``seen_ids``
+        (regardless of YAML-file order), so a top-level entity declaring
+        ``location:`` to point at another entity later in the same file
+        will resolve. The Builder's same-file forward-ref refusal is a
+        separate decision at create time, not a validate-time concern.
+        """
+        for entity in entities:
+            content = entity.content if isinstance(entity.content, dict) else {}
+            for field_name in ("location", "destination"):
+                ref = content.get(field_name)
+                if not isinstance(ref, dict):
+                    continue
+                if "deployment_file" not in ref or "deployment_id" not in ref:
+                    continue
+                target_file = ref["deployment_file"]
+                target_id = ref["deployment_id"]
+                if target_id not in self.seen_ids.get(target_file, set()):
+                    self._record_finding(
+                        f"{entity.path}: '{field_name}' cross-ref to "
+                        f"(deployment_file={target_file!r}, deployment_id={target_id}) "
+                        f"does not resolve to any entity in this build"
+                    )
 
     def _check_and_record_unique_id(self, entity: LoadedEntity) -> None:
         """Record the entity's deployment_id; flag if already seen for this file.

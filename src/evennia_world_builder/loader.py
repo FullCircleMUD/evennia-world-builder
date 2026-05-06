@@ -164,31 +164,40 @@ class Loader:
         self, mapping, path: str, location: dict, is_nested: bool,
         parent_deployment_id,
     ) -> list:
-        """Walk one entity and its ``contents:`` subtree depth-first pre-order.
+        """Walk one entity and its ``contents:`` / ``exits:`` subtree depth-first pre-order.
 
-        Pops the ``contents`` key from a shallow copy of the mapping so
-        the emitted LoadedEntity's ``content`` doesn't carry duplicate
-        child data, then recurses into each child mapping with
-        ``is_nested=True`` and the same ``path`` / ``location`` (a
-        ``contents:`` block doesn't cross the file boundary).
+        Pops both child-block keys (``contents`` and ``exits``) from a
+        shallow copy of the mapping so the emitted LoadedEntity's
+        ``content`` doesn't carry duplicate child data, then recurses
+        into each child mapping with ``is_nested=True`` and the same
+        ``path`` / ``location`` (a child block doesn't cross the file
+        boundary). Both blocks are flattened identically — the
+        ``exits:`` vs ``contents:`` distinction is author-organizational
+        and carries no semantic weight downstream; what makes an entity
+        an exit is its typeclass + ``destination:`` field, not the YAML
+        block name.
 
         For nested entities the Loader records ``had_author_location``
         from the *original* mapping before any modification, then
         unconditionally **synthesises** ``content["location"]`` as
         ``{deployment_file: path, deployment_id: parent_deployment_id}``.
         The synthesised dict overwrites whatever the author wrote (the
-        validator will refuse the author's value via the recorded flag
-        in a later step). Top-level entities are not synthesised — their
-        ``location:`` is the author's responsibility, and
-        ``_check_location_well_formed`` enforces it.
+        validator refuses the author's value via the recorded flag).
+        Top-level entities are not synthesised — their ``location:`` is
+        the author's responsibility, and ``_check_location_well_formed``
+        enforces it.
+
+        Order: when both blocks are present, ``contents:`` children flatten
+        first, then ``exits:`` children. Order within each block is
+        preserved. The Builder's two-pass model orders the *creation* of
+        exit objects after non-exit objects regardless, so flatten order
+        between the two blocks isn't load-bearing.
 
         Defensive about malformed input — non-dict mappings emerge as a
         single LoadedEntity carrying the raw value (validator's
-        field-shape predicates refuse them); a non-list ``contents``
-        value is silently ignored here (validator step 2 will land
-        ``_check_contents_field_shape`` to refuse it cleanly); a
-        non-mapping child within ``contents:`` is skipped (same
-        rationale).
+        field-shape predicates refuse them); a non-list ``contents`` /
+        ``exits`` value is silently ignored here; a non-mapping child
+        within either block is skipped.
         """
         if not isinstance(mapping, dict):
             return [LoadedEntity(
@@ -202,7 +211,8 @@ class Loader:
         had_author_location = "location" in mapping
 
         body = dict(mapping)
-        children = body.pop("contents", None)
+        contents_children = body.pop("contents", None)
+        exits_children = body.pop("exits", None)
 
         if is_nested:
             body["location"] = {
@@ -218,8 +228,10 @@ class Loader:
             had_author_location=had_author_location,
         )]
 
-        if isinstance(children, list):
-            my_deployment_id = mapping.get("deployment_id")
+        my_deployment_id = mapping.get("deployment_id")
+        for children in (contents_children, exits_children):
+            if not isinstance(children, list):
+                continue
             for child in children:
                 if not isinstance(child, dict):
                     continue

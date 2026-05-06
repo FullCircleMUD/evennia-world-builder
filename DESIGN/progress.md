@@ -2,6 +2,22 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-05-06 (later still — spike 4 in progress)
+
+- **Spike 4 — `exits:` recursion + cross-reference resolution — load + validation pipeline shipped (steps 1–4).** The Validator now catches every cross-ref correctness issue at validate time; the Builder two-pass + DB tag-search fallback (step 5) is the only remaining work. 242 unit tests green (200 → 242, +42 across the four steps).
+
+  - **Step 1 — Loader walks `exits:` blocks.** `_flatten` pops both `contents` and `exits` keys, walks both lists with identical flatten/synthesis logic. The block name is purely author-organizational — downstream code distinguishes exits from non-exits via typeclass + destination presence, not block origin (drops the previously-considered `is_exit` flag). 10 new LoaderTest methods.
+
+  - **Step 2 — Validator Tier 1 destination shape predicates.** New `_check_destination_well_formed` (when present, strict cross-ref dict; null rejected unlike location). New `_check_location_not_null_when_destination_present` (an entity declaring destination must live in a room — null location refused, defensive about absent location to avoid double-reporting with `_check_location_well_formed`). Extracted shared `_check_cross_ref_dict_shape` helper consumed by both location and destination shape checks. 17 new tests.
+
+  - **Step 3 — Validator Tier 3 typeclass-aware destination predicates.** `_check_destination_required_for_exit_typeclass` (typeclass inherits Evennia's `DefaultExit` ⇒ `destination:` required) and `_check_destination_forbidden_for_non_exit_typeclass` (otherwise destination forbidden). New `_resolve_typeclass` helper for best-effort import shared with the existing `_check_typeclass_resolvable`. Both predicates skip silently on shape/import failures so each authoring mistake produces one finding, not several. 7 new tests.
+
+  - **Step 4 — Validator Tier 4 cross-ref resolution.** New `_check_cross_refs` post-loop phase walks every entity's `location:` and `destination:` cross-refs and verifies the `(deployment_file, deployment_id)` pair resolves in `self.seen_ids`. New `resolve_cross_refs` constructor flag — production callers (`wb_build` whole-repo pre-validation, `wb-validate` CLI) opt in; tests default off so narrow-scope predicate tests don't flap on dangling refs they don't care about. Forward refs within the same file resolve correctly (seen_ids is fully built before Tier 4 runs); the Builder's eventual same-file forward-ref refusal is a separate decision at create time, not a Tier 4 concern. Defensive about malformed refs — Tier 1 catches shape; Tier 4 stays quiet on those to avoid double-reporting. 8 new tests.
+
+  Validation gating remains as designed in [validation-gating.md](validation-gating.md): `wb-validate` (CI) and `wb_build` whole-repo pre-validation both run Tiers 1+2+4; `wb_build` runtime adds Tier 3. When `repo-ci-pre-validation: true` and no `--force-validate`, `wb_build` trusts CI for cross-ref correctness and skips the whole-repo walk + Tier 4 — the in-game runtime path then runs only Tier 1+2+3 against the build-scoped subset.
+
+  Pending for spike 4 step 5: Builder two-pass model (non-exits in pass 1, exits in pass 2 so each exit's destination resolves to a just-built object) + DB tag-search fallback in `_resolve_cross_ref` for cross-file refs to entities already in the DB from a previous invocation.
+
 ## 2026-05-06 (later same day)
 
 - **Spike 2 — `contents:` recursion + same-file location cross-references — shipped end-to-end.** Live verified against the test repo: `wb_build zone=millholm room=bakery` cleans + creates 5 objects (the bakery + a brick oven, display case, baker, and honey loaf), and the four nested entities are placed *inside* the bakery — `examine Goldencrust Bakery` lists the four contents, `get loaf` succeeds because the loaf's location is the room the player is in, `examine brick oven` shows the right description. 200 unit tests green (171 → 200, +29 across the four steps).

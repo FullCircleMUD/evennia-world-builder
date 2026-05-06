@@ -96,8 +96,8 @@ Depth-first traversal driven by indexes, then per-file flatten of any `contents:
 
 - If location is a **file**: read it via Reader, then **flatten**:
   - A top-level mapping is one entity; a top-level list of mappings is many.
-  - For each top-level entity, walk its `contents:` block (if any) depth-first pre-order, emitting each nested mapping as its own `LoadedEntity` with `is_nested=True`. The parent's `contents:` key is popped from the emitted body so downstream consumers don't see duplicate child data.
-  - Nested entities inherit the parent's `path` and `location` dict (a `contents:` block doesn't cross the file boundary).
+  - For each top-level entity, walk its `contents:` and `exits:` blocks (if any) depth-first pre-order, emitting each nested mapping as its own `LoadedEntity` with `is_nested=True`. Both blocks are walked identically — block name is purely author-organizational (groups exits visually for readability), and downstream code distinguishes exits from non-exits via typeclass + `destination:` presence, not block origin. The parent's `contents:` and `exits:` keys are popped from the emitted body so downstream consumers don't see duplicate child data.
+  - Nested entities inherit the parent's `path` and `location` dict — neither block crosses the file boundary.
 - If location is a **folder**: read its `index.yaml`; for each entry, recurse with the child's `FoundLocation` (path + kind constructed via path inference; `location` dict extended with `{levels[depth]: entry.name}`); concatenate results.
 
 Indexes are navigation only — never content. The Loader walks indexes; it never reads files not listed in an index.
@@ -111,7 +111,7 @@ For each nested mapping, before emitting the LoadedEntity, the Loader:
 
 This unifies the `location:` shape across top-level and nested entities (both are now either `null` or a cross-ref dict), letting the validator and Builder treat them uniformly. The validator separately refuses author-written `location:` on a nested entity via `had_author_location` so the overwrite is never silent. See [deployment-identity.md](deployment-identity.md#loader-synthesis) for the synthesis rationale and [validator.md](validator.md) for the predicate.
 
-Defensive about malformed input: a non-list `contents:` value is silently ignored (skip recursion); a non-mapping child within a list is skipped. No errors raised at load time — the validator's existing field-shape predicates catch malformed entity bodies, and authoring tools surface YAML structure problems upstream.
+Defensive about malformed input: a non-list `contents:` or `exits:` value is silently ignored (skip recursion); a non-mapping child within either list is skipped. No errors raised at load time — the validator's existing field-shape predicates catch malformed entity bodies, and authoring tools surface YAML structure problems upstream.
 
 ### API
 

@@ -48,29 +48,30 @@ def _check_typeclass_resolvable(entity) -> str | None:
 
 `wb_build` (Evennia command) passes `evennia_runtime=True` — the gamedir is fully loaded by definition; runtime checks can fire and refuse before the Builder is invoked.
 
-### Tier 4 — Cross-repo checks (controlled by what entities are passed)
+### Tier 4 — Cross-ref resolution (caller opt-in)
 
-Currently planned, not yet shipped. Cross-reference resolution against the full `seen_ids` index requires that the validator was given the *whole repo's* entities in the call. That's a property of *what* the caller passed in (an empty-query `Loader.load(finder.find())` result), not a separate switch — see [validation-gating.md](validation-gating.md) for when this happens.
+Cross-reference resolution against the full `seen_ids` index — for both `location:` and `destination:` dicts. Runs only when the caller passes `resolve_cross_refs=True` to `Validator.__init__`, asserting they've supplied whole-repo entities. Production callers (`wb_build` whole-repo pre-validation, `wb-validate` CLI) opt in; tests default off so narrow-scope predicate tests don't flap on dangling refs they don't care about.
 
 ## Two orthogonal switches
 
-The validator's behaviour is set by exactly two things:
+The validator's behaviour is set by two constructor flags:
 
 | Switch | Set by | Controls |
 |---|---|---|
-| `evennia_runtime` (constructor arg) | caller (`wb_build` → True; `wb-validate` → False) | Tier 3 predicates |
-| Whether entities are whole-repo or scoped | what `loader.load(...)` was called with | Tier 4 checks |
+| `evennia_runtime` | caller (`wb_build` → True; `wb-validate` → False) | Tier 3 predicates |
+| `resolve_cross_refs` | caller (whole-repo callers → True; tests/scope-only callers → False) | Tier 4 phase |
 
 No environment detection inside predicates. No try/except heuristics that conflate "wrong env" with "wrong path." The caller asserts what tier of check it can support; the validator runs the appropriate set.
 
 ### Behaviour matrix
 
-|  | `wb-validate` (CI) | `wb-validate` (local dev) | `wb_build` |
-|---|---|---|---|
-| Tier 1 (stateless) | always | always | always |
-| Tier 2 (stateful per-file) | always | always | always |
-| Tier 3 (Evennia-runtime) | skipped | skipped (no gamedir loaded) | runs |
-| Tier 4 (cross-repo) | runs (whole-repo loaded) | runs (whole-repo loaded) | runs only on `wb_build all` or `--force-validate` |
+|  | `wb-validate` (CI) | `wb-validate` (local dev) | `wb_build` (CI gate off) | `wb_build` (CI gate on, no force) | `wb_build` (CI gate on + `--force-validate`) |
+|---|---|---|---|---|---|
+| Loads | whole repo | whole repo | whole repo | scope only | whole repo |
+| Tier 1 (stateless) | always | always | always | always | always |
+| Tier 2 (stateful per-file) | always | always | always | always | always |
+| Tier 3 (Evennia-runtime) | skipped | skipped (no gamedir loaded) | runs | runs | runs |
+| Tier 4 (cross-ref resolution) | runs | runs | runs | skipped (trust CI) | runs |
 
 ## Complete refusal, not halt-on-first-error
 
@@ -105,6 +106,8 @@ Same Validator, two output channels.
 | 1 — Stateless | `_check_name_well_formed` | field missing, not a string, or empty/whitespace |
 | 1 — Stateless | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
 | 1 — Stateless | `_check_location_well_formed` | field missing; or value is neither `null` nor a strict `{deployment_file: non-empty str, deployment_id: non-negative int}` cross-ref dict (extra keys refused, `bool` excluded from int) |
+| 1 — Stateless | `_check_destination_well_formed` | `destination:` (optional) present but not a strict `{deployment_file, deployment_id}` cross-ref dict; same shape rules as `location:` but `null` is also rejected (an exit must point somewhere) |
+| 1 — Stateless | `_check_location_not_null_when_destination_present` | entity declares `destination:` but `location:` is null — an exit must live in a room |
 | 1 — Stateless | `_check_no_author_location_on_nested` | nested entity (`is_nested=True`) had a `location:` key in the original YAML — the Loader synthesises one and silently overwriting author intent would be a "fails loudly" violation |
 | 1 — Stateless | `_check_description_field_shape` | `description` (optional) present but not a string |
 | 1 — Stateless | `_check_aliases_field_shape` | `aliases` (optional) not a list, or items not non-empty strings |
@@ -114,6 +117,9 @@ Same Validator, two output channels.
 | 1 — Stateless | `_check_tags_no_reserved_category` | author tag uses category in the reserved `wb_*` namespace |
 | 2 — Stateful | `_check_and_record_unique_id` | `deployment_id` already declared in the same file (top-level + nested share one namespace) |
 | 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
+| 3 — Evennia-runtime | `_check_destination_required_for_exit_typeclass` | typeclass inherits from Evennia's `DefaultExit` but no `destination:` is set |
+| 3 — Evennia-runtime | `_check_destination_forbidden_for_non_exit_typeclass` | typeclass does NOT inherit from `DefaultExit` but `destination:` is set |
+| 4 — Cross-ref | `_check_cross_refs` (post-loop phase) | any `location:` or `destination:` cross-ref `(deployment_file, deployment_id)` not present in the `seen_ids` index built during the per-entity pass |
 
 All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader now synthesises `content["location"]` as a cross-ref dict on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
 
@@ -132,10 +138,12 @@ No defaults, no fallbacks. The Builder relies on the validator's guarantees to s
 
 ## Cross-reference resolution
 
-Cross-reference resolution happens on two levels, by two different actors:
+Two layers, each owning a different correctness check:
 
-- **Same-file backward refs are resolved by the Builder in-pass** via its `_built_by_id` map (see [builder.md](builder.md)). The Loader emits depth-first pre-order so a nested entity's parent is always already built when its location dict is resolved. No validator-side work needed here — the Builder fails loudly with `BuilderError` if the lookup misses.
-- **Same-file forward refs and cross-file refs** are still pending. A future Tier 4 phase against the per-file `seen_ids` index will refuse same-file forward refs at validate time (so the failure surfaces alongside other findings, before any DB mutation); cross-file refs will get a corresponding cross-repo index in spike 4 along with the Builder's tag-search fallback for parents already in the DB from a previous invocation.
+- **Validator Tier 4 — existence.** When `resolve_cross_refs=True`, the validator's post-loop phase walks every entity's `location:` and `destination:` cross-refs and verifies the `(deployment_file, deployment_id)` pair appears in `seen_ids`. Catches "this ref points at nothing in the build set" — dangling refs, deployment_id typos, file-name typos. Forward refs within the same file resolve correctly because `seen_ids` is fully built before Tier 4 runs.
+- **Builder runtime — usability.** The Builder's `_resolve_cross_ref` does a single dict lookup against its `_built_by_id` map at create time (see [builder.md](builder.md)). For same-file backward refs this always hits (depth-first pre-order). Same-file forward refs miss and are refused at create time — a separate decision from Tier 4 (which says the ref is valid in the abstract; the Builder says "but it can't be used yet at this point in the build"). Cross-file refs to entities NOT in the current build invocation will fall through to a DB tag-search lookup once spike 4 step 5 lands; until then they refuse with `BuilderError`.
+
+The two layers are independent — Tier 4 catches *correctness* problems before any DB mutation, and the Builder enforces *ordering* problems at create time.
 
 ## Out of scope (deferred)
 

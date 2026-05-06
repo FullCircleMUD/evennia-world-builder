@@ -6,7 +6,7 @@ World content (rooms, exits, fixtures, descriptions) is expressed as data; an id
 
 ## Status
 
-**Active development** — single-entity build + same-file `contents:` recursion working end-to-end. `exits:` recursion and cross-file location cross-references are upcoming spikes. See [DESIGN/progress.md](DESIGN/progress.md) for the running milestone log.
+**Active development** — single-entity build + `contents:` recursion + full validation of `exits:` recursion and cross-references all working end-to-end. The Builder's two-pass model for actually creating exits (and the cross-file DB tag-search fallback) is the only piece still pending. See [DESIGN/progress.md](DESIGN/progress.md) for the running milestone log.
 
 ## What's working today
 
@@ -14,8 +14,8 @@ The library's pipeline reads → validates → builds YAML world content into Ev
 
 - Fetch YAML from a configured source (GitHub or local filesystem) via the `Reader` abstraction.
 - Walk the per-folder `index.yaml` manifest tree to find entities matching an operator query.
-- **Flatten `contents:` blocks** into individual `LoadedEntity` records; nested entities inherit their parent's source path and get a Loader-synthesised `location:` cross-ref pointing at the parent. Recursion is depth-unlimited (chest in room contains key contains gem).
-- Validate every entity through a predicate-tier pipeline (mandatory fields, shape, typeclass-resolvability, per-file `deployment_id` uniqueness, reserved tag categories, `location:` either null or `{deployment_file, deployment_id}` cross-ref), gathering all findings before any DB mutation.
+- **Flatten `contents:` and `exits:` blocks** into individual `LoadedEntity` records; nested entities inherit their parent's source path and get a Loader-synthesised `location:` cross-ref pointing at the parent. Recursion is depth-unlimited (chest in room contains key contains gem).
+- Validate every entity through a predicate-tier pipeline (mandatory fields, shape, typeclass-resolvability, per-file `deployment_id` uniqueness, reserved tag categories, `location:` either null or `{deployment_file, deployment_id}` cross-ref, `destination:` shape + presence consistent with whether the typeclass inherits from `DefaultExit`), gathering all findings before any DB mutation. A Tier 4 deferred phase resolves every cross-ref against the per-file `seen_ids` index, catching dangling refs and id/file typos at validate time.
 - Build each Evennia object: typeclass + key + **location resolved from cross-ref via in-build map** + description + aliases + locks + attributes (with YAML overriding typeclass defaults) + author tags + the auto-set `wb_deployment_file` / `wb_deployment_id` identity pair.
 - Clean up prior deployments of the same source files before recreating, so re-applying the same YAML produces a stable end state — including all nested entities, since they share their parent's `wb_deployment_file` tag.
 

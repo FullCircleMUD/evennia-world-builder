@@ -91,11 +91,14 @@ The Validator (see [validator.md](validator.md)) enforces the contract. Currentl
 - **Every entity declares `deployment_id`** — mandatory, non-negative integer, `bool` rejected even though it's an `int` subclass. Top-level and nested entities share one per-file namespace.
 - **No duplicate `deployment_id`s within a file** — flagged as the per-file `{deployment_file: {ids}}` index is built incrementally during the per-entity pass.
 - **`location:` shape** — accepts `null` or a strict `{deployment_file: non-empty str, deployment_id: non-negative int}` cross-ref dict; refuses extras, missing keys, or wrong types.
+- **`destination:` shape** — same strict cross-ref dict as `location:`, but `null` rejected (an exit must point somewhere). Optional at the shape layer; required for exit typeclasses (Tier 3) and forbidden for non-exit typeclasses (Tier 3).
+- **`location:` not null when `destination:` present** — an entity that declares destination must live in a room.
 - **No author-written `location:` on nested entities** — refuses if the Loader recorded `had_author_location=True` on an `is_nested=True` entity (i.e. the author wrote `location:` and the Loader overwrote it).
+- **Cross-ref resolution (Tier 4)** — when the caller passes `resolve_cross_refs=True`, every `location:` and `destination:` cross-ref `(deployment_file, deployment_id)` pair must appear in the `seen_ids` index. Catches dangling refs and id/file typos at validate time, before any DB mutation.
 
-Same-file *backward* cross-ref resolution happens at build time via the Builder's `_built_by_id` map (see [builder.md](builder.md)) — same identity scheme, same tuple key, direct dict lookup. Same-file *forward* refs and cross-file refs still pend a Tier 4 validator phase (forward refs) and cross-repo machinery (spike 4).
+Same-file *backward* cross-ref resolution at build time happens via the Builder's `_built_by_id` map (see [builder.md](builder.md)) — same identity scheme, same tuple key, direct dict lookup. Cross-file refs to entities NOT in the current build invocation will fall through to a DB tag-search lookup once the Builder grows that fallback (spike 4 step 5).
 
-Validator scope is per-file for the uniqueness check, plus the `{deployment_file: {ids}}` index for cross-ref resolution. Memory footprint stays small even for large repos: one file's content at a time + an integer-set index.
+Validator scope is per-file for the uniqueness check, plus the `{deployment_file: {ids}}` index that powers both Tier 2 duplicate detection and Tier 4 cross-ref resolution. Memory footprint stays small even for large repos: one file's content at a time + an integer-set index.
 
 ## Out of scope (deferred)
 
