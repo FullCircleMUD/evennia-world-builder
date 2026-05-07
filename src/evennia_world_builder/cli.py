@@ -85,15 +85,22 @@ def validate(argv: list[str] | None = None) -> int:
         definitions = Definitions.from_reader(reader)
         finder = Finder(reader, definitions)
         loader = Loader(reader, definitions)
+        load_result = loader.load(finder.find())
         # wb-validate always loads the whole repo (empty-query find), so
         # it can run Tier 4 cross-ref resolution against a complete
         # seen_ids index. evennia_runtime stays False — the consumer's
-        # gamedir is generally not on sys.path in CI.
-        validator = Validator(definitions, resolve_cross_refs=True)
-        entities = loader.load(finder.find())
+        # gamedir is generally not on sys.path in CI. file_metadata
+        # carries any file-level keys (incoming_exits, etc.).
+        validator = Validator(
+            definitions,
+            resolve_cross_refs=True,
+            file_metadata=load_result.file_metadata,
+        )
     except (ReaderError, DefinitionsError, FinderError, LoaderError) as e:
         print(f"wb-validate: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
+
+    entities = load_result.entities
 
     exit_code = 0
     try:

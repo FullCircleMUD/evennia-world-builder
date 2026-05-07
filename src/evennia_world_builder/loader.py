@@ -8,7 +8,7 @@ Index ordering is execution ordering: the Loader walks each index in
 declared order, recursing into folders depth-first. Consumers control
 ordering of operations by ordering entries in their indexes.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .definitions import Definitions
 from .errors import (
@@ -25,6 +25,30 @@ _INDEX_FILENAME = "index.yaml"
 _KIND_FOLDER = "folder"
 _KIND_FILE = "file"
 _VALID_KINDS = (_KIND_FOLDER, _KIND_FILE)
+
+
+@dataclass(frozen=True)
+class LoadResult:
+    """Output of ``Loader.load()``.
+
+    Carries both the flat list of ``LoadedEntity`` records and a
+    per-file metadata dict for any file-level keys found in the
+    loaded files (currently ``incoming_exits:``; the structure is
+    open for future file-level keys).
+
+    Attributes:
+        entities: Flat depth-first pre-order list of ``LoadedEntity``
+                  records, exactly as before — the entity-level data
+                  consumed by Validator and Builder.
+        file_metadata: ``{file_path: {key: value, ...}}``. A file
+                  appears in this dict only if it declared at least one
+                  file-level key besides ``entities:``. The library
+                  doesn't curate the keys; consumers (Validator,
+                  Builder) look up the keys they care about.
+    """
+
+    entities: list
+    file_metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -79,10 +103,19 @@ class Loader:
     def __init__(self, reader: Reader, definitions: Definitions):
         self.reader = reader
         self.definitions = definitions
+        # Per-load accumulator, reset at the start of every load() call.
+        # Populated by _flatten_top_level whenever a leaf file declares
+        # any file-level keys besides ``entities:``.
+        self._file_metadata: dict = {}
 
-    def load(self, found: FoundLocation) -> list:
-        """From the given entry point, return all leaf entities below it."""
-        return self._load(found)
+    def load(self, found: FoundLocation) -> LoadResult:
+        """From the given entry point, return loaded entities + file metadata."""
+        self._file_metadata = {}
+        entities = self._load(found)
+        return LoadResult(
+            entities=entities,
+            file_metadata=dict(self._file_metadata),
+        )
 
     def _load(self, found: FoundLocation) -> list:
         if found.kind == _KIND_FILE:
@@ -175,6 +208,15 @@ class Loader:
                 f"{path!r}: 'entities:' must be a list, "
                 f"got {type(entity_list).__name__}"
             )
+
+        # File-level keys: everything in the top-level mapping except
+        # `entities:`. Library doesn't curate the keys here; consumers
+        # (Validator, Builder) look up the ones they care about. A file
+        # only appears in self._file_metadata if it declared at least
+        # one such key — clean by-default.
+        file_meta = {k: v for k, v in parsed.items() if k != "entities"}
+        if file_meta:
+            self._file_metadata[path] = file_meta
 
         results = []
         for item in entity_list:

@@ -55,6 +55,23 @@ description: Smells of bread.
 
 The library normalises both shapes — a top-level mapping is treated as a one-element list. A single source file may therefore produce multiple `LoadedEntity` records.
 
+## File-level `incoming_exits:` registry
+
+Each YAML file may declare a file-level `incoming_exits:` list — references to exits that *terminate at* one of this file's rooms but live (canonically) in another file's `exits:` block. The library treats these as **registrations**, not declarations: when this file is rebuilt and a registered target is missing from the database, the Builder's pass 3 (spike 6 step 6e) fetches the target's canonical file via the Reader and rebuilds it.
+
+The field lives at file level (sibling of `entities:` in the canonical YAML shape), extracted by the Loader into `LoadResult.file_metadata[file_path]["incoming_exits"]`. Authors typically declare it at the bottom of a file:
+
+```yaml
+entities:
+  - { ... room A ... }
+  - { ... room B ... }
+
+incoming_exits:
+  - { deployment_file: zones/inn.yaml, deployment_id: 2 }
+```
+
+The library is type-agnostic about what's registered — the field is named for its dominant case (cross-file exits) but the mechanism only checks "does this `(deployment_file, deployment_id)` exist; if not, fetch and rebuild it from its canonical file."
+
 ## Cross-references
 
 Cross-references between entities use the composite identity. **Both keys are always required** — no same-file inference. Uniform shape simplifies the validator's predicate and the Builder's lookup.

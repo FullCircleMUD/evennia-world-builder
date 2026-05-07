@@ -321,49 +321,6 @@ def _check_location_not_null_when_destination_present(entity: LoadedEntity) -> s
     return None
 
 
-def _check_incoming_exits_field_shape(entity: LoadedEntity) -> str | None:
-    """Tier 1: ``incoming_exits:`` (when present) is a list of cross-ref dicts.
-
-    Optional field — absence is fine. When present, must be a list and
-    every item must be a strict ``{deployment_file, deployment_id}``
-    cross-ref dict (same shape rules as ``location:`` / ``destination:``,
-    via the shared ``_check_cross_ref_dict_shape`` helper).
-
-    Each entry references an exit that lives in another file but
-    terminates at this room. The Builder's pass 3 reads each ref's
-    canonical file and rebuilds the entity if it's not present in the
-    DB — keeping incoming connections alive when this room's file is
-    rebuilt in isolation. The "is the target actually an exit
-    typeclass" check is a separate Tier 3 concern; this Tier 1
-    predicate just shape-checks the dicts.
-    """
-    content = entity.content if isinstance(entity.content, dict) else {}
-    if "incoming_exits" not in content:
-        return None
-
-    value = content["incoming_exits"]
-    if not isinstance(value, list):
-        return (
-            f"{entity.path}: 'incoming_exits' must be a list, "
-            f"got {type(value).__name__}"
-        )
-
-    for index, ref in enumerate(value):
-        prefix = f"{entity.path}: incoming_exits[{index}]"
-        if not isinstance(ref, dict):
-            return (
-                f"{prefix}: must be a cross-ref dict "
-                f"{{deployment_file, deployment_id}}, got {type(ref).__name__}"
-            )
-        finding = _check_cross_ref_dict_shape(
-            ref, entity.path, f"incoming_exits[{index}]",
-        )
-        if finding is not None:
-            return finding
-
-    return None
-
-
 def _check_no_author_location_on_nested(entity: LoadedEntity) -> str | None:
     """Tier 1: nested entities must not declare ``location:`` themselves.
 
@@ -711,7 +668,6 @@ class Validator:
         _check_location_well_formed,
         _check_destination_well_formed,
         _check_location_not_null_when_destination_present,
-        _check_incoming_exits_field_shape,
         _check_no_author_location_on_nested,
         _check_description_field_shape,
         _check_aliases_field_shape,
@@ -731,6 +687,7 @@ class Validator:
         self, definitions: Definitions, *,
         evennia_runtime: bool = False,
         resolve_cross_refs: bool = False,
+        file_metadata: dict | None = None,
     ):
         self.definitions = definitions
         self.evennia_runtime = evennia_runtime
@@ -742,6 +699,12 @@ class Validator:
         # pass True; tests default False to keep narrow-scope cases
         # working.
         self.resolve_cross_refs = resolve_cross_refs
+        # Per-file metadata extracted by the Loader (file-level keys
+        # like ``incoming_exits:`` that live alongside ``entities:`` in
+        # the YAML wrapper mapping). Validator runs file-level shape
+        # checks against this dict and Tier 4 walks ``incoming_exits:``
+        # entries for cross-ref resolution.
+        self.file_metadata: dict = dict(file_metadata or {})
         self.messages: list[str] = []
         self.errors: list[str] = []
         self.seen_ids: dict[str, set[int]] = {}
@@ -763,6 +726,10 @@ class Validator:
                 # (e.g. trying to record a non-integer in seen_ids).
                 continue
             self._check_and_record_unique_id(entity)
+
+        # File-level shape checks (run once per file, regardless of
+        # how many entities were declared in it).
+        self._check_file_metadata_shape()
 
         if self.resolve_cross_refs:
             self._check_cross_refs(entities)
@@ -801,15 +768,64 @@ class Validator:
                 clean = False
         return clean
 
+    def _check_file_metadata_shape(self) -> None:
+        """File-level Tier 1 — shape-check ``incoming_exits:`` per file.
+
+        ``self.file_metadata`` is a ``{file_path: {key: value, ...}}``
+        dict populated by the Loader. The library currently recognises
+        one file-level key, ``incoming_exits:``; future file-level keys
+        slot in here. Each file gets its incoming_exits list checked
+        once, regardless of how many entities it contained.
+
+        For each path in ``file_metadata`` with an ``incoming_exits:``
+        entry: must be a list of strict ``{deployment_file,
+        deployment_id}`` cross-ref dicts (same shape as ``location:`` /
+        ``destination:``, via the shared helper). Findings name the
+        path and the array index for easy author location.
+        """
+        for path, meta in self.file_metadata.items():
+            if not isinstance(meta, dict):
+                self._record_finding(
+                    f"{path}: file metadata must be a mapping, "
+                    f"got {type(meta).__name__}"
+                )
+                continue
+            if "incoming_exits" not in meta:
+                continue
+
+            value = meta["incoming_exits"]
+            if not isinstance(value, list):
+                self._record_finding(
+                    f"{path}: 'incoming_exits' must be a list, "
+                    f"got {type(value).__name__}"
+                )
+                continue
+
+            for index, ref in enumerate(value):
+                prefix = f"{path}: incoming_exits[{index}]"
+                if not isinstance(ref, dict):
+                    self._record_finding(
+                        f"{prefix}: must be a cross-ref dict "
+                        f"{{deployment_file, deployment_id}}, "
+                        f"got {type(ref).__name__}"
+                    )
+                    continue
+                finding = _check_cross_ref_dict_shape(
+                    ref, path, f"incoming_exits[{index}]",
+                )
+                if finding is not None:
+                    self._record_finding(finding)
+
     def _check_cross_refs(self, entities: list) -> None:
         """Tier 4: every cross-ref must resolve in the seen_ids index.
 
         Runs after the per-entity loop, when ``self.seen_ids`` reflects
-        every clean entity in the build set. For each entity, walks:
+        every clean entity in the build set. Walks:
 
-        - ``content["location"]`` (single cross-ref dict, optional)
-        - ``content["destination"]`` (single cross-ref dict, optional)
-        - ``content["incoming_exits"]`` (list of cross-ref dicts, optional)
+        - ``content["location"]`` per entity (single cross-ref dict, optional)
+        - ``content["destination"]`` per entity (single cross-ref dict, optional)
+        - ``self.file_metadata[path]["incoming_exits"]`` per file
+          (list of cross-ref dicts, optional)
 
         For each well-shaped ref, verifies the
         ``(deployment_file, deployment_id)`` pair appears in
@@ -831,16 +847,23 @@ class Validator:
             content = entity.content if isinstance(entity.content, dict) else {}
             for field_name in ("location", "destination"):
                 self._check_one_cross_ref(
-                    entity, content.get(field_name), field_name,
+                    entity.path, content.get(field_name), field_name,
                 )
-            incoming = content.get("incoming_exits")
-            if isinstance(incoming, list):
-                for index, ref in enumerate(incoming):
-                    self._check_one_cross_ref(
-                        entity, ref, f"incoming_exits[{index}]",
-                    )
 
-    def _check_one_cross_ref(self, entity: LoadedEntity, ref, field_name: str) -> None:
+        # File-level incoming_exits — walk per file, name the file path
+        # in the finding so the author can locate the bad ref.
+        for path, meta in self.file_metadata.items():
+            if not isinstance(meta, dict):
+                continue
+            incoming = meta.get("incoming_exits")
+            if not isinstance(incoming, list):
+                continue
+            for index, ref in enumerate(incoming):
+                self._check_one_cross_ref(
+                    path, ref, f"incoming_exits[{index}]",
+                )
+
+    def _check_one_cross_ref(self, source_path: str, ref, field_name: str) -> None:
         """Verify a single cross-ref dict resolves in self.seen_ids.
 
         Defensive: silently skips non-dict values and dicts missing
@@ -857,7 +880,7 @@ class Validator:
         target_id = ref["deployment_id"]
         if target_id not in self.seen_ids.get(target_file, set()):
             self._record_finding(
-                f"{entity.path}: '{field_name}' cross-ref to "
+                f"{source_path}: '{field_name}' cross-ref to "
                 f"(deployment_file={target_file!r}, deployment_id={target_id}) "
                 f"does not resolve to any entity in this build"
             )

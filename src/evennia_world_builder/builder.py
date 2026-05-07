@@ -11,10 +11,14 @@ _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 
 
 class Builder:
-    def __init__(self, definitions: Definitions):
+    def __init__(self, definitions: Definitions, *, file_metadata: dict | None = None):
         self.definitions = definitions
         self.deleted_count: int = 0
         self._built_by_id: dict = {}
+        # Per-file metadata from Loader.LoadResult — used by pass 3
+        # (dependency restore, step 6e). Plumbed through now; build
+        # loop doesn't consult it yet.
+        self.file_metadata: dict = dict(file_metadata or {})
 
     def build(self, entities: list) -> list:
         self.deleted_count = 0

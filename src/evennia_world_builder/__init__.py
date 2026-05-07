@@ -22,7 +22,7 @@ from .errors import (
     ValidatorError,
 )
 from .finder import Finder, FoundLocation
-from .loader import LoadedEntity, Loader
+from .loader import LoadedEntity, Loader, LoadResult
 from .readers import GitHubReader, LocalReader, Reader, ReaderResult
 from .validator import Validator
 
@@ -50,6 +50,7 @@ __all__ = [
     "FinderQueryError",
     "Loader",
     "LoadedEntity",
+    "LoadResult",
     "LoaderError",
     "LoaderInvalidShapeError",
     "LoaderMissingIndexError",

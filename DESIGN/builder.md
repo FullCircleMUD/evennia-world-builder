@@ -26,6 +26,10 @@ The Builder is the **only component in the pipeline that mutates the consumer's 
 
 6. **No partial state.** Per CLAUDE.md principle 4, any failure (cleanup query, deletion, create, attribute apply, tag apply, unresolved cross-ref) refuses with a typed `BuilderError` before the next entity is touched. The operator gets either a clean apply or a complete refusal — never half a build.
 
+## File-level metadata
+
+The Builder accepts `file_metadata: dict | None` at construction (the `LoadResult.file_metadata` from the Loader). Currently this is plumbed through to support the upcoming pass 3 (dependency restore — step 6e), where file-level `incoming_exits:` registries get walked after the main build pass. The build loop today (passes 1+2) does not consult `file_metadata`.
+
 ## What's deferred and why
 
 - **Same-file forward-ref refusal at validate time.** Today the Builder refuses forward refs at create time; Validator Tier 4 sees them as valid (`seen_ids` is fully built before Tier 4 runs). A future predicate could refuse them at validate time so the failure surfaces alongside other findings, before any DB mutation. Deferred — the current refusal is loud enough.

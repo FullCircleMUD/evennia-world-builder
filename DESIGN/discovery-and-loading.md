@@ -90,13 +90,28 @@ class Finder:
 
 ## Loader
 
+### File shape
+
+The library standardises on a single canonical YAML file shape: **a top-level mapping with an `entities:` key whose value is a list of entity mappings.** File-level keys live alongside `entities:` in the same top-level mapping.
+
+```yaml
+entities:
+  - { ... entity 1 ... }
+  - { ... entity 2 ... }
+incoming_exits:                       # ← file-level metadata key
+  - { deployment_file: ..., deployment_id: ... }
+```
+
+Other top-level shapes (a bare list, a single-entity mapping without `entities:`, a non-mapping value) raise `LoaderInvalidShapeError`.
+
 ### Algorithm
 
-Depth-first traversal driven by indexes, then per-file flatten of any `contents:` recursion:
+Depth-first traversal driven by indexes, then per-file flatten of `contents:` and `exits:` recursion plus extraction of file-level metadata:
 
-- If location is a **file**: read it via Reader, then **flatten**:
-  - A top-level mapping is one entity; a top-level list of mappings is many.
-  - For each top-level entity, walk its `contents:` and `exits:` blocks (if any) depth-first pre-order, emitting each nested mapping as its own `LoadedEntity` with `is_nested=True`. Both blocks are walked identically — block name is purely author-organizational (groups exits visually for readability), and downstream code distinguishes exits from non-exits via typeclass + `destination:` presence, not block origin. The parent's `contents:` and `exits:` keys are popped from the emitted body so downstream consumers don't see duplicate child data.
+- If location is a **file**: read it via Reader, then:
+  - Validate the top-level shape (see above).
+  - Extract everything-but-`entities:` into the per-file metadata dict (`{file_path → {key: value}}`). The library doesn't curate the keys — consumers (Validator, Builder) look up the ones they care about.
+  - Walk each entry in the `entities:` list. For each, walk its `contents:` and `exits:` blocks (if any) depth-first pre-order, emitting each nested mapping as its own `LoadedEntity` with `is_nested=True`. Both blocks are walked identically — block name is purely author-organizational (groups exits visually for readability), and downstream code distinguishes exits from non-exits via typeclass + `destination:` presence, not block origin. The parent's `contents:` and `exits:` keys are popped from the emitted body so downstream consumers don't see duplicate child data.
   - Nested entities inherit the parent's `path` and `location` dict — neither block crosses the file boundary.
 - If location is a **folder**: read its `index.yaml`; for each entry, recurse with the child's `FoundLocation` (path + kind constructed via path inference; `location` dict extended with `{levels[depth]: entry.name}`); concatenate results.
 
@@ -124,14 +139,20 @@ class LoadedEntity:
     is_nested: bool = False    # True iff loaded from inside a `contents:` block
     had_author_location: bool = False  # True iff the original YAML had a `location:` key
 
+@dataclass(frozen=True)
+class LoadResult:
+    entities: list             # list[LoadedEntity], the flat depth-first pre-order list
+    file_metadata: dict        # {file_path: {file_level_key: value}} — empty per-file dict if no file-level keys
+
 class Loader:
     def __init__(self, reader: Reader, definitions: Definitions): ...
-    def load(self, found: FoundLocation) -> list[LoadedEntity]: ...
+    def load(self, found: FoundLocation) -> LoadResult: ...
 ```
 
 ### Errors
 
 - `LoaderError(Exception)` — base
+- `LoaderInvalidShapeError(LoaderError)` — file shape doesn't match the canonical `entities:`-wrapper form
 - `LoaderMissingIndexError(LoaderError)` — folder lacks `index.yaml`
 - `LoaderMissingEntryError(LoaderError)` — index points at a file or folder that doesn't exist
 - Reader's `ReaderError` subtypes propagate unchanged for HTTP / parse failures

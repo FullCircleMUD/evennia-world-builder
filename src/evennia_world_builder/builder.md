@@ -56,16 +56,19 @@ This handles all three edit shapes uniformly: entities added, entities removed, 
 
 `obj.delete()` safely relocates contents (including any player standing in the room) to the home location before the row is removed, so operators get a clean message rather than a crash.
 
-### `__init__(definitions)`
+### `__init__(definitions, *, file_metadata=None)`
 
 ```python
-def __init__(self, definitions: Definitions):
+def __init__(self, definitions: Definitions, *, file_metadata: dict | None = None):
     self.definitions = definitions
     self.deleted_count: int = 0
     self._built_by_id: dict = {}
+    self.file_metadata: dict = dict(file_metadata or {})
 ```
 
 `definitions` is stored for future use (level vocabulary may inform placement decisions like building exits at zone boundaries); current logic doesn't consult it.
+
+`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys like `incoming_exits:` extracted by the Loader. Used by pass 3 (dependency restore, step 6e). Currently plumbed through but not consulted by the build loop.
 
 `deleted_count` and `_built_by_id` are reset at the start of every `build()` call — they're per-build state, not per-instance state. The Builder instance is reusable across multiple `build()` invocations.
 

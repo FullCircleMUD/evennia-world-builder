@@ -2,6 +2,22 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-05-07 (later)
+
+- **Spike 6 — file-level metadata + canonical YAML shape — pipeline shipped (steps 6a–6d).** Authors now have a single canonical YAML file shape (shape 3 — top-level mapping with `entities:` key), and the pipeline carries file-level metadata end-to-end. The actual dependency-restore behaviour (Builder pass 3) is the only remaining piece. 287 unit tests green (242 → 287, +45 across the four steps).
+
+  - **Step 6a — Tier 1 `incoming_exits:` shape predicate** (later refactored in 6d to be file-level instead of per-entity). 10 new tests.
+
+  - **Step 6b — Tier 4 walks `incoming_exits:`.** Existing `_check_cross_refs` extended to walk the field via a shared `_check_one_cross_ref` helper. 5 new tests covering resolution, miss reporting, partial resolution, gating, and malformed-skip-no-double-report.
+
+  - **Step 6c — Loader standardises on shape 3 universally.** Drops shape 1 (single-entity mapping) and shape 2 (top-level list of mappings). Every YAML file must now be a top-level mapping with an `entities:` key whose value is a list of entity mappings. New `LoaderInvalidShapeError` for refused shapes. Backwards-incompatible file shape change; the test repo's three YAML files (`bakery.yaml`, `inn.yaml`, `aethenveil.yaml`) all migrated. 6 new shape-enforcement tests.
+
+  - **Step 6d — File-level metadata pipeline.** New `Loader.LoadResult(entities, file_metadata)` dataclass return; `Loader.load()` returns the new shape, orchestrators (`commands.py`, `cli.py`) unpack. The Loader extracts everything-but-`entities:` from the top-level mapping into `file_metadata: dict[file_path → {key: value}]`. Validator and Builder accept `file_metadata` via constructor. The 6a Tier 1 predicate refactored from per-entity (`entity.content["incoming_exits"]`) to once-per-file (`self.file_metadata[path]["incoming_exits"]`); Tier 4's incoming_exits walk does the same. Findings now name the file path (the registry's home), not any specific entity. 11 new tests in the Loader file_metadata extraction suite plus refactored 6a/6b coverage.
+
+  Live verified end-to-end against the test repo: `wb_build all` builds 13 objects (multi-entity bakery file with two rooms + 4 contents in bakery + 1 content in baker's house + bidirectional exits + the inn + the sanctum) using shape 3 universally. The `incoming_exits:` registration mechanism still doesn't restore missing cross-file exits — that's the Builder pass 3 work in step 6e.
+
+  Pending for spike 6 step 6e: Builder pass 3. After passes 1+2 finish, walk every entry in `self.file_metadata[path]["incoming_exits"]` for the files in the build set; for each ref that isn't already in `_built_by_id` and can't be resolved via the DB tag-search fallback, fetch the canonical file via the Reader, find the entity by deployment_id (running through the existing `Loader._flatten_top_level` so location synthesis applies), and build it through the same Builder logic.
+
 ## 2026-05-07
 
 - **Spike 4 — `exits:` recursion + cross-reference resolution — fully shipped (step 5).** The Builder grew the two-pass dispatch and DB tag-search fallback that complete the spike. Live verified end-to-end against the test repo: `wb_build all` builds 9 objects with bidirectional bakery↔inn exits both traversable; `wb_build zone=millholm room=bakery` rebuilds just the bakery's file and the new `north` exit's destination resolves to the unchanged inn (#8) via the DB fallback (no error, no manual rebuild required). 258 unit tests green (242 → 258, +16 across the four sub-steps).

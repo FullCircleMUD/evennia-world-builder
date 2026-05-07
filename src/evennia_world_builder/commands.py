@@ -104,6 +104,7 @@ def _filter_by_query(entities: list, query: dict) -> list:
 def _run_validator(
     caller, definitions, entities, refusal_label, *,
     resolve_cross_refs: bool,
+    file_metadata: dict | None = None,
 ) -> bool:
     """Run a Validator pass over entities. Surface every message via caller.
 
@@ -114,11 +115,14 @@ def _run_validator(
     whole-repo pre-validation path; scope-only validation trusts CI for
     cross-ref resolution and skips Tier 4 (its seen_ids index would be
     incomplete and produce false-positive misses on cross-file refs).
+    ``file_metadata`` is the per-file metadata dict from Loader.LoadResult,
+    used for file-level checks (incoming_exits shape + Tier 4 resolution).
     """
     validator = Validator(
         definitions,
         evennia_runtime=True,
         resolve_cross_refs=resolve_cross_refs,
+        file_metadata=file_metadata,
     )
     try:
         validator.validate(entities)
@@ -237,7 +241,7 @@ class CmdWBBuild(BaseCommand):
             )
             caller.msg(f"wb_build: pre-validating whole repo ({reason})")
             try:
-                all_entities = loader.load(finder.find())
+                load_result = loader.load(finder.find())
             except FinderManifestError as e:
                 caller.msg(f"wb_build: manifest error during pre-validation: {e}")
                 return
@@ -248,6 +252,9 @@ class CmdWBBuild(BaseCommand):
                 caller.msg(f"wb_build: read error during pre-validation: {e}")
                 return
 
+            all_entities = load_result.entities
+            file_metadata = load_result.file_metadata
+
             caller.msg(
                 f"wb_build: pre-validation loaded {len(all_entities)} "
                 f"entit{'y' if len(all_entities) == 1 else 'ies'} (whole repo)"
@@ -255,6 +262,7 @@ class CmdWBBuild(BaseCommand):
             if not _run_validator(
                 caller, definitions, all_entities, "pre-validation failed",
                 resolve_cross_refs=True,
+                file_metadata=file_metadata,
             ):
                 return
 
@@ -283,13 +291,16 @@ class CmdWBBuild(BaseCommand):
             )
 
             try:
-                entities = loader.load(found)
+                load_result = loader.load(found)
             except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
                 caller.msg(f"wb_build: {e}")
                 return
             except ReaderError as e:
                 caller.msg(f"wb_build: read error during loading: {e}")
                 return
+
+            entities = load_result.entities
+            file_metadata = load_result.file_metadata
 
             caller.msg(
                 f"wb_build: Loader returned {len(entities)} entit"
@@ -298,6 +309,7 @@ class CmdWBBuild(BaseCommand):
             if not _run_validator(
                 caller, definitions, entities, "validation failed",
                 resolve_cross_refs=False,
+                file_metadata=file_metadata,
             ):
                 return
 
@@ -307,7 +319,7 @@ class CmdWBBuild(BaseCommand):
             )
             caller.msg(f"      content: {pprint.pformat(entity.content)}")
 
-        builder = Builder(definitions)
+        builder = Builder(definitions, file_metadata=file_metadata)
         try:
             created = builder.build(entities)
         except BuilderError as e:
