@@ -57,7 +57,7 @@ The library normalises both shapes — a top-level mapping is treated as a one-e
 
 ## File-level `incoming_exits:` registry
 
-Each YAML file may declare a file-level `incoming_exits:` list — references to exits that *terminate at* one of this file's rooms but live (canonically) in another file's `exits:` block. The library treats these as **registrations**, not declarations: when this file is rebuilt and a registered target is missing from the database, the Builder's pass 3 (spike 6 step 6e) fetches the target's canonical file via the Reader and rebuilds it.
+Each YAML file may declare a file-level `incoming_exits:` list — references to exits that *terminate at* one of this file's rooms but live (canonically) in another file's `exits:` block. The library treats these as **registrations**, not declarations: when this file is rebuilt and a registered target is missing from the database, the Builder's pass 3 fetches the target's canonical file via the Reader and rebuilds it.
 
 The field lives at file level (sibling of `entities:` in the canonical YAML shape), extracted by the Loader into `LoadResult.file_metadata[file_path]["incoming_exits"]`. Authors typically declare it at the bottom of a file:
 
@@ -71,6 +71,14 @@ incoming_exits:
 ```
 
 The library is type-agnostic about what's registered — the field is named for its dominant case (cross-file exits) but the mechanism only checks "does this `(deployment_file, deployment_id)` exist; if not, fetch and rebuild it from its canonical file."
+
+**End-to-end behaviour:**
+
+- Validator's Tier 1 file-level shape check refuses malformed `incoming_exits:` lists (must be a list of strict cross-ref dicts).
+- Validator's Tier 4 cross-ref resolution (when run on whole-repo entities) verifies every registered ref points at an entity that exists somewhere in the repo.
+- Builder's pass 3 (after passes 1+2) walks each registered ref. In-build map and DB tag-search lookups handle the common cases ("already built in pass 2" or "still alive in DB"); when both miss (typical scenario: cascade-deleted by the just-finished cleanup of this file), Pass 3 fetches the canonical file via the Reader, runs it through `Loader._flatten_top_level`, finds the entity by deployment_id, and builds it through the same per-entity logic passes 1/2 use. The rebuilt entity gets tagged with its **canonical** `wb_deployment_file` so a future rebuild of THAT file cleans it up correctly.
+
+This restores the operator's ability to rebuild any single file in isolation without hand-tracking which other files reference it. Cross-file rebuild dependencies dissolve.
 
 ## Cross-references
 

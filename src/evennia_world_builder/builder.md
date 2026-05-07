@@ -56,19 +56,26 @@ This handles all three edit shapes uniformly: entities added, entities removed, 
 
 `obj.delete()` safely relocates contents (including any player standing in the room) to the home location before the row is removed, so operators get a clean message rather than a crash.
 
-### `__init__(definitions, *, file_metadata=None)`
+### `__init__(definitions, *, file_metadata=None, reader=None)`
 
 ```python
-def __init__(self, definitions: Definitions, *, file_metadata: dict | None = None):
+def __init__(
+    self, definitions: Definitions, *,
+    file_metadata: dict | None = None,
+    reader: Reader | None = None,
+):
     self.definitions = definitions
     self.deleted_count: int = 0
     self._built_by_id: dict = {}
     self.file_metadata: dict = dict(file_metadata or {})
+    self._reader: Reader | None = reader
 ```
 
 `definitions` is stored for future use (level vocabulary may inform placement decisions like building exits at zone boundaries); current logic doesn't consult it.
 
-`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys like `incoming_exits:` extracted by the Loader. Used by pass 3 (dependency restore, step 6e). Currently plumbed through but not consulted by the build loop.
+`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys like `incoming_exits:` extracted by the Loader. Pass 3 walks the `incoming_exits:` lists for each file in the build set.
+
+`reader` is the configured Reader, used by pass 3 to fetch canonical files when an `incoming_exits:` target is missing from both `_built_by_id` and the DB. Optional — Builder constructed without a reader can still build entities; pass 3 raises `BuilderError` only if it actually needs to fetch a missing dep.
 
 `deleted_count` and `_built_by_id` are reset at the start of every `build()` call — they're per-build state, not per-instance state. The Builder instance is reusable across multiple `build()` invocations.
 
@@ -85,18 +92,10 @@ The single public method. Returns the list of created Evennia objects on success
 1. Reset `deleted_count = 0` and `_built_by_id = {}` (per-build state).
 2. Lazy-import `evennia.utils.create.create_object`.
 3. **Cleanup pass:** call `_cleanup(file_paths)` against the unique set of source files in the entity list (see `_cleanup` below).
-4. **Two-pass partition:** split the entity list into `non_exits` (entities without a `destination:` field) and `exits` (entities with one). Iterate `non_exits + exits` so every non-exit is built before any exit — this guarantees an exit's destination cross-ref always resolves to a non-exit room that's already in `_built_by_id`. Within each pass, entity order is preserved (depth-first pre-order from the Loader for nested entities; YAML order for top-level entities).
-5. **Per-entity construction** — for each entity in the partitioned order:
-   1. Resolve `content["location"]` via `_resolve_cross_ref` (null → None, cross-ref dict → parent object).
-   2. Build `create_kwargs` (`typeclass`, `key`, `location`, `attributes=[("desc", desc)]`).
-   3. If `"destination" in content`: resolve via `_resolve_cross_ref` and add `destination=` to `create_kwargs`.
-   4. Call `create_object(**create_kwargs)`.
-   5. Stash the freshly-built object in `_built_by_id` keyed by `(entity.path, content["deployment_id"])` — so any subsequent entity in this build pass can resolve its cross-refs to this object.
-   6. Apply aliases via `_apply_aliases`.
-   7. Apply locks via `_apply_locks`.
-   8. Apply attributes via `_apply_attributes`.
-   9. Apply tags via `_apply_tags` (author tags + the auto-set `wb_deployment_file` / `wb_deployment_id` pair).
-6. Return the list of created objects.
+4. **Pass 1+2 partition:** split the entity list into `non_exits` (entities without a `destination:` field) and `exits` (entities with one). Iterate `non_exits + exits` so every non-exit is built before any exit — this guarantees an exit's destination cross-ref always resolves to a non-exit room that's already in `_built_by_id`. Within each pass, entity order is preserved (depth-first pre-order from the Loader for nested entities; YAML order for top-level entities).
+5. For each entity in the partitioned order, call `_build_one(entity, create_object)` (see helper below for the per-entity steps).
+6. **Pass 3 (dependency restore):** call `_run_pass_3(file_paths_in_scope, create_object)`. Walks `file_metadata[path]["incoming_exits"]` for each file in scope; for each registered ref that's missing from both `_built_by_id` and the DB tag-search, fetches the canonical file via the Reader and builds the missing entity through the same `_build_one` helper.
+7. Return the combined list of created objects (passes 1+2 + any pass-3 restorations).
 
 #### Two-pass dispatch
 

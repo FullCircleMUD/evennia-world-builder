@@ -2,9 +2,27 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-05-07 (latest)
+
+- **Spike 6 step 6e — Builder pass 3 (incoming_exits dependency restore) — shipped end-to-end.** Surgical rebuilds now keep cross-file exits alive automatically. Live verified: `wb_build zone=millholm room=bakery` cleans up the bakery + 6 in-scope objects, rebuilds 10 in-scope, and pass 3 detects that the inn's south exit (registered in bakery.yaml's `incoming_exits:`) was cascade-deleted, fetches `inn.yaml` from the Reader, finds id=2, and rebuilds it — tagged with its canonical `wb_deployment_file=inn.yaml` so a future inn rebuild sweeps it correctly. 11 objects created (10 in scope + 1 pass-3 restoration). The inn still shows "Exits: south" working bidirectionally — previously the dangling-exit casualty in every prior smoke test. 293 unit tests green (287 → 293, +6 pass-3 cases).
+
+  Implementation:
+  - `Builder.__init__` accepts an optional `reader` kwarg for canonical-file fetching. Pass 3 raises `BuilderError` if a missing dep needs fetching but no reader was configured.
+  - Refactored `build()` to extract a `_build_one(entity, create_object)` helper used by all three passes — same per-entity logic regardless of which pass spawned it.
+  - New `_run_pass_3(file_paths_in_scope, create_object)` walks `file_metadata[path]["incoming_exits"]` for each file in the build set; for each ref, checks `_built_by_id` (skip if found), `_lookup_in_db` (skip + cache if found), then falls through to `_fetch_canonical_entity` (read via Reader → flatten → find by deployment_id → build through `_build_one`).
+  - Pass 3 entities resolve their own location/destination via the existing `_resolve_cross_ref` machinery — DB fallback handles cross-file refs out of scope, in-build map handles refs to entities just rebuilt in passes 1/2.
+  - Orchestrators (`commands.py`) pass the configured Reader through to the Builder constructor.
+
+  Spike 6 is now complete end-to-end. The library handles every realistic cross-file rebuild dependency case: scoped rebuilds restore incoming exits automatically; whole-repo rebuilds make pass 3 a no-op (everything's already in `_built_by_id` from pass 2); operators can rebuild any one file without thinking about what other files reference it.
+
+  Pending follow-ups (deferred per documented design discussions, not blocking):
+  - **Same-file forward-ref refusal at validate time** (predicate addition, deferred from spike 4).
+  - **Strict attribute validation** (typeclass-introspection check, deferred from spike 1).
+  - **Multi-entity-file `entities:` wrapper as the only legal shape** — already enforced via `LoaderInvalidShapeError`, but the existing-document migration path could carry tooling support if it ever bites.
+
 ## 2026-05-07 (later)
 
-- **Spike 6 — file-level metadata + canonical YAML shape — pipeline shipped (steps 6a–6d).** Authors now have a single canonical YAML file shape (shape 3 — top-level mapping with `entities:` key), and the pipeline carries file-level metadata end-to-end. The actual dependency-restore behaviour (Builder pass 3) is the only remaining piece. 287 unit tests green (242 → 287, +45 across the four steps).
+- **Spike 6 steps 6a–6d — file-level metadata + canonical YAML shape — pipeline shipped.** Authors now have a single canonical YAML file shape (shape 3 — top-level mapping with `entities:` key), and the pipeline carries file-level metadata end-to-end. 287 unit tests green (242 → 287, +45 across the four steps).
 
   - **Step 6a — Tier 1 `incoming_exits:` shape predicate** (later refactored in 6d to be file-level instead of per-entity). 10 new tests.
 

@@ -26,9 +26,19 @@ The Builder is the **only component in the pipeline that mutates the consumer's 
 
 6. **No partial state.** Per CLAUDE.md principle 4, any failure (cleanup query, deletion, create, attribute apply, tag apply, unresolved cross-ref) refuses with a typed `BuilderError` before the next entity is touched. The operator gets either a clean apply or a complete refusal — never half a build.
 
-## File-level metadata
+## File-level metadata + pass 3 (dependency restore)
 
-The Builder accepts `file_metadata: dict | None` at construction (the `LoadResult.file_metadata` from the Loader). Currently this is plumbed through to support the upcoming pass 3 (dependency restore — step 6e), where file-level `incoming_exits:` registries get walked after the main build pass. The build loop today (passes 1+2) does not consult `file_metadata`.
+The Builder accepts `file_metadata: dict | None` and an optional `reader: Reader | None` at construction (the `LoadResult.file_metadata` from the Loader and the configured Reader). Pass 3 (dependency restore) runs after passes 1+2:
+
+- For each file path in the build set: walk its `incoming_exits:` list (a file-level YAML key registering exits that live in other files but terminate at this file's rooms).
+- For each `(deployment_file, deployment_id)` ref:
+  1. **In-build map hit** (target was built in pass 2 because its canonical file is also in scope) → skip.
+  2. **DB tag-search hit** (target exists from a previous build, hasn't been cascade-deleted) → cache the result into `_built_by_id`, skip.
+  3. **Both miss** (cascade-deleted in cleanup, or never built) → fetch the canonical file via the Reader, run it through `Loader._flatten_top_level` (so location synthesis applies to nested entities), find the entity by deployment_id, build it through the same `_build_one` helper passes 1/2 use.
+
+The fetched entity gets tagged with its **canonical** `wb_deployment_file` (e.g., `inn.yaml` for the inn's south exit), so a future rebuild of that canonical file cleans it up correctly via the standard tag-sweep cleanup model.
+
+If pass 3 needs to fetch a missing dep but no `reader` was configured at construction, it raises `BuilderError`. Callers that don't need pass 3 (no `incoming_exits:` anywhere) can omit the reader.
 
 ## What's deferred and why
 
