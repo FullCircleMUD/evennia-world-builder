@@ -28,6 +28,10 @@ class Builder:
 
         # Two-pass: non-exits first so their dbrefs land in _built_by_id,
         # then exits (their destinations may point at any non-exit).
+        # `incoming_exits:` is metadata for pass 3 (dependency phase); it
+        # is intentionally NOT consulted during passes 1/2 — the entity's
+        # own typeclass/location/destination determine which pass it lands
+        # in, regardless of any incoming-exit registrations it declares.
         non_exits = [e for e in entities if "destination" not in (e.content or {})]
         exits = [e for e in entities if "destination" in (e.content or {})]
 

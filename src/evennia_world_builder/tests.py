@@ -27,6 +27,7 @@ from evennia_world_builder import (
     GitHubReader,
     LoadedEntity,
     Loader,
+    LoaderInvalidShapeError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
     LocalReader,
@@ -80,27 +81,33 @@ SCAFFOLD = {
         {"name": "inn", "kind": "file"},
         {"name": "bakery", "kind": "file"},
     ]},
-    "aethenveil.yaml": {
-        "deployment_id": 1,
-        "typeclass": "evennia.objects.objects.DefaultRoom",
-        "name": "Sanctum",
-        "location": None,
-        "description": "A circular chamber.",
-    },
-    "millholm/inn.yaml": {
-        "deployment_id": 1,
-        "typeclass": "evennia.objects.objects.DefaultRoom",
-        "name": "The Crooked Lantern",
-        "location": None,
-        "description": "Warmly lit.",
-    },
-    "millholm/bakery.yaml": {
-        "deployment_id": 2,
-        "typeclass": "evennia.objects.objects.DefaultRoom",
-        "name": "Goldencrust",
-        "location": None,
-        "description": "Smells of bread.",
-    },
+    "aethenveil.yaml": {"entities": [
+        {
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "Sanctum",
+            "location": None,
+            "description": "A circular chamber.",
+        },
+    ]},
+    "millholm/inn.yaml": {"entities": [
+        {
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "The Crooked Lantern",
+            "location": None,
+            "description": "Warmly lit.",
+        },
+    ]},
+    "millholm/bakery.yaml": {"entities": [
+        {
+            "deployment_id": 2,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "Goldencrust",
+            "location": None,
+            "description": "Smells of bread.",
+        },
+    ]},
 }
 
 
@@ -623,6 +630,69 @@ class LoaderTest(TestCase):
         with self.assertRaises(LoaderMissingIndexError):
             loader.load(FoundLocation(path="", kind="folder", location={}))
 
+    # --- shape-3 enforcement (single supported file shape) ---
+    #
+    # The library standardises on top-level mapping with an `entities:`
+    # key whose value is a list of entity mappings. Other top-level
+    # shapes (bare list, single-entity mapping without `entities:`,
+    # non-mapping) are refused at load time.
+
+    def _load_with_raw_file_yaml(self, file_yaml):
+        """Load a one-file scaffold WITHOUT the auto-wrap helper applies.
+
+        Used for tests that need to exercise the Loader's refusal of
+        shape violations directly.
+        """
+        scaffold = {
+            "definitions.yaml": {"levels": ["zone"]},
+            "index.yaml": {"entries": [{"name": "x", "kind": "file"}]},
+            "x.yaml": file_yaml,
+        }
+        reader = FixtureReader(scaffold)
+        defs = Definitions.from_reader(reader)
+        loader = Loader(reader, defs)
+        return loader.load(FoundLocation(path="", kind="folder", location={}))
+
+    def test_shape_3_mapping_with_entities_accepted(self):
+        # Canonical shape: top-level mapping with `entities:` list.
+        entities = self._load_with_raw_file_yaml({
+            "entities": [
+                {"deployment_id": 1, "name": "A"},
+                {"deployment_id": 2, "name": "B"},
+            ],
+        })
+        self.assertEqual(len(entities), 2)
+
+    def test_shape_3_empty_entities_list_accepted(self):
+        # Empty entities list is valid (file declares no entities).
+        entities = self._load_with_raw_file_yaml({"entities": []})
+        self.assertEqual(entities, [])
+
+    def test_top_level_list_refused(self):
+        # Legacy shape 2 (top-level YAML list) is no longer supported.
+        with self.assertRaises(LoaderInvalidShapeError):
+            self._load_with_raw_file_yaml([
+                {"deployment_id": 1, "name": "A"},
+            ])
+
+    def test_top_level_mapping_without_entities_refused(self):
+        # Legacy shape 1 (single-entity mapping at top level) is no
+        # longer supported — author must wrap in `entities:`.
+        with self.assertRaises(LoaderInvalidShapeError):
+            self._load_with_raw_file_yaml({
+                "deployment_id": 1, "name": "Solo",
+            })
+
+    def test_entities_value_must_be_list(self):
+        # `entities:` present but not a list — refuse.
+        with self.assertRaises(LoaderInvalidShapeError):
+            self._load_with_raw_file_yaml({"entities": "oops"})
+
+    def test_non_mapping_top_level_refused(self):
+        # null / scalar / etc. at the top level — refuse.
+        with self.assertRaises(LoaderInvalidShapeError):
+            self._load_with_raw_file_yaml(None)
+
     # --- contents: recursion (spike 2 step 1) ---
     #
     # The Loader flattens a single YAML file's `contents:` tree into a flat
@@ -632,11 +702,31 @@ class LoaderTest(TestCase):
     # content so downstream consumers don't see duplicate child data.
 
     def _load_yaml(self, yaml_body):
-        """Wrap yaml_body in a one-file scaffold and return loaded entities."""
+        """Wrap yaml_body in a one-file scaffold and return loaded entities.
+
+        ``yaml_body`` is whatever the test wants to exercise. The library
+        requires shape 3 (top-level mapping with ``entities:`` key) on
+        every leaf file, so this helper auto-wraps legacy inputs:
+
+        - A single entity mapping (no ``entities:`` key) → wraps as
+          ``{entities: [yaml_body]}``.
+        - A list of entity mappings → wraps as ``{entities: list}``.
+        - A pre-shape-3 mapping (already has ``entities:`` key) →
+          passes through unchanged.
+
+        Tests that want to exercise refusal of malformed file shapes
+        bypass this helper and build their own scaffold.
+        """
+        if isinstance(yaml_body, list):
+            file_yaml = {"entities": yaml_body}
+        elif isinstance(yaml_body, dict) and "entities" not in yaml_body:
+            file_yaml = {"entities": [yaml_body]}
+        else:
+            file_yaml = yaml_body
         scaffold = {
             "definitions.yaml": {"levels": ["zone"]},
             "index.yaml": {"entries": [{"name": "x", "kind": "file"}]},
-            "x.yaml": yaml_body,
+            "x.yaml": file_yaml,
         }
         reader = FixtureReader(scaffold)
         defs = Definitions.from_reader(reader)
@@ -1830,6 +1920,120 @@ class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
         ))
 
 
+class ValidatorIncomingExitsFieldShapeTest(TestCase):
+    """Tier 1 — `incoming_exits:` (when present) is a list of cross-ref dicts.
+
+    Each entry references an exit terminating at this room that lives
+    in another file. The Builder's pass 3 (spike 6 step 6c) reads each
+    canonical file and rebuilds missing exits, keeping incoming
+    connections alive across isolated rebuilds. This Tier 1 predicate
+    just shape-checks; the typeclass-must-be-an-exit check is Tier 3.
+    """
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_absent_field_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_list_passes(self):
+        v = self._validator()
+        v.validate([self._entity({"incoming_exits": []})])
+        self.assertEqual(v.errors, [])
+
+    def test_well_formed_list_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"incoming_exits": [
+            {"deployment_file": "millholm/inn.yaml", "deployment_id": 2},
+            {"deployment_file": "millholm/forest.yaml", "deployment_id": 7},
+        ]})])
+        self.assertEqual(v.errors, [])
+
+    def test_non_list_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": "oops"})])
+        self.assertTrue(any(
+            "'incoming_exits' must be a list" in e for e in v.errors
+        ))
+
+    def test_non_dict_entry_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": ["oops"]})])
+        self.assertTrue(any(
+            "must be a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_missing_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": [
+                {"deployment_id": 1},
+            ]})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_file" in e
+            for e in v.errors
+        ))
+
+    def test_missing_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": [
+                {"deployment_file": "a.yaml"},
+            ]})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_id" in e
+            for e in v.errors
+        ))
+
+    def test_extra_keys_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": [
+                {"deployment_file": "a.yaml", "deployment_id": 1, "comment": "no"},
+            ]})])
+        self.assertTrue(any("unexpected key" in e for e in v.errors))
+
+    def test_negative_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": [
+                {"deployment_file": "a.yaml", "deployment_id": -1},
+            ]})])
+        self.assertTrue(any(
+            "'deployment_id' must be non-negative" in e for e in v.errors
+        ))
+
+    def test_index_in_finding_path(self):
+        # When an entry is malformed, the finding identifies WHICH index
+        # in the list is at fault — easier for authors to locate the typo.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"incoming_exits": [
+                {"deployment_file": "good.yaml", "deployment_id": 1},
+                {"deployment_file": "bad.yaml", "deployment_id": "not-an-int"},
+            ]})])
+        self.assertTrue(any(
+            "incoming_exits[1]" in e for e in v.errors
+        ))
+
+
 class ValidatorNoAuthorLocationOnNestedTest(TestCase):
     """Tier 1 — refuse author-written `location:` on nested entities."""
 
@@ -2367,7 +2571,10 @@ class ValidatorCrossRefResolutionTest(TestCase):
     `wb-validate` set the flag; tests default off.
     """
 
-    def _entity(self, *, path, deployment_id, location=None, destination=None) -> LoadedEntity:
+    def _entity(
+        self, *, path, deployment_id,
+        location=None, destination=None, incoming_exits=None,
+    ) -> LoadedEntity:
         content = {
             "deployment_id": deployment_id,
             "name": "x",
@@ -2376,6 +2583,8 @@ class ValidatorCrossRefResolutionTest(TestCase):
         }
         if destination is not None:
             content["destination"] = destination
+        if incoming_exits is not None:
+            content["incoming_exits"] = incoming_exits
         return LoadedEntity(location={}, content=content, path=path)
 
     def _validator(self, *, resolve_cross_refs=True):
@@ -2503,6 +2712,83 @@ class ValidatorCrossRefResolutionTest(TestCase):
         self.assertTrue(any(
             "'destination' must be a cross-ref dict" in e for e in v.errors
         ))
+        self.assertFalse(any(
+            "does not resolve" in e for e in v.errors
+        ))
+
+    # --- incoming_exits resolution (spike 6 step 6b) ---
+
+    def test_incoming_exits_all_resolve(self):
+        # bakery.yaml's incoming_exits register two exits living in
+        # other files; both targets exist in seen_ids.
+        v = self._validator()
+        v.validate([
+            self._entity(path="bakery.yaml", deployment_id=1, location=None,
+                         incoming_exits=[
+                             {"deployment_file": "inn.yaml", "deployment_id": 2},
+                             {"deployment_file": "forest.yaml", "deployment_id": 7},
+                         ]),
+            self._entity(path="inn.yaml", deployment_id=2, location=None),
+            self._entity(path="forest.yaml", deployment_id=7, location=None),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_incoming_exits_unresolved_reported(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="bakery.yaml", deployment_id=1, location=None,
+                incoming_exits=[
+                    {"deployment_file": "ghost.yaml", "deployment_id": 99},
+                ],
+            )])
+        self.assertTrue(any(
+            "'incoming_exits[0]' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_incoming_exits_partial_resolution_reports_only_misses(self):
+        # First entry resolves, second doesn't. Only the second produces
+        # a finding — index naming makes the bad one easy to locate.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._entity(path="bakery.yaml", deployment_id=1, location=None,
+                             incoming_exits=[
+                                 {"deployment_file": "inn.yaml", "deployment_id": 2},
+                                 {"deployment_file": "ghost.yaml", "deployment_id": 99},
+                             ]),
+                self._entity(path="inn.yaml", deployment_id=2, location=None),
+            ])
+        # Exactly one finding, naming index 1 (the bad one).
+        unresolved = [e for e in v.errors if "does not resolve" in e]
+        self.assertEqual(len(unresolved), 1)
+        self.assertIn("incoming_exits[1]", unresolved[0])
+
+    def test_incoming_exits_skipped_when_resolve_cross_refs_false(self):
+        # Mirrors location/destination gating behaviour.
+        v = self._validator(resolve_cross_refs=False)
+        v.validate([self._entity(
+            path="bakery.yaml", deployment_id=1, location=None,
+            incoming_exits=[{"deployment_file": "ghost.yaml", "deployment_id": 99}],
+        )])
+        self.assertFalse(any("does not resolve" in e for e in v.errors))
+
+    def test_incoming_exits_malformed_skipped_no_double_report(self):
+        # Tier 1 catches a non-dict entry. Tier 4 must stay quiet so
+        # the operator sees one finding for that mistake, not two.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="bakery.yaml", deployment_id=1, location=None,
+                incoming_exits=["not a dict"],
+            )])
+        # Tier 1 finding present:
+        self.assertTrue(any(
+            "incoming_exits[0]" in e and "must be a cross-ref dict" in e
+            for e in v.errors
+        ))
+        # Tier 4 stays quiet on the malformed entry:
         self.assertFalse(any(
             "does not resolve" in e for e in v.errors
         ))

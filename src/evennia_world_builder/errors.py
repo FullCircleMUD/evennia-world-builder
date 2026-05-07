@@ -50,6 +50,16 @@ class LoaderMissingEntryError(LoaderError):
     """An index references a file or folder that does not exist at the source."""
 
 
+class LoaderInvalidShapeError(LoaderError):
+    """A leaf YAML file is not in the required shape — see DESIGN docs.
+
+    The library standardises on a single file shape: a top-level mapping
+    with an ``entities:`` key whose value is a list of entity mappings.
+    Any other top-level shape (a bare list, a single-entity mapping
+    without `entities:`, a non-mapping value) raises this error.
+    """
+
+
 class ValidatorError(Exception):
     """Base class for Validator failures.
 

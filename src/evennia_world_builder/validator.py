@@ -321,6 +321,49 @@ def _check_location_not_null_when_destination_present(entity: LoadedEntity) -> s
     return None
 
 
+def _check_incoming_exits_field_shape(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``incoming_exits:`` (when present) is a list of cross-ref dicts.
+
+    Optional field — absence is fine. When present, must be a list and
+    every item must be a strict ``{deployment_file, deployment_id}``
+    cross-ref dict (same shape rules as ``location:`` / ``destination:``,
+    via the shared ``_check_cross_ref_dict_shape`` helper).
+
+    Each entry references an exit that lives in another file but
+    terminates at this room. The Builder's pass 3 reads each ref's
+    canonical file and rebuilds the entity if it's not present in the
+    DB — keeping incoming connections alive when this room's file is
+    rebuilt in isolation. The "is the target actually an exit
+    typeclass" check is a separate Tier 3 concern; this Tier 1
+    predicate just shape-checks the dicts.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "incoming_exits" not in content:
+        return None
+
+    value = content["incoming_exits"]
+    if not isinstance(value, list):
+        return (
+            f"{entity.path}: 'incoming_exits' must be a list, "
+            f"got {type(value).__name__}"
+        )
+
+    for index, ref in enumerate(value):
+        prefix = f"{entity.path}: incoming_exits[{index}]"
+        if not isinstance(ref, dict):
+            return (
+                f"{prefix}: must be a cross-ref dict "
+                f"{{deployment_file, deployment_id}}, got {type(ref).__name__}"
+            )
+        finding = _check_cross_ref_dict_shape(
+            ref, entity.path, f"incoming_exits[{index}]",
+        )
+        if finding is not None:
+            return finding
+
+    return None
+
+
 def _check_no_author_location_on_nested(entity: LoadedEntity) -> str | None:
     """Tier 1: nested entities must not declare ``location:`` themselves.
 
@@ -668,6 +711,7 @@ class Validator:
         _check_location_well_formed,
         _check_destination_well_formed,
         _check_location_not_null_when_destination_present,
+        _check_incoming_exits_field_shape,
         _check_no_author_location_on_nested,
         _check_description_field_shape,
         _check_aliases_field_shape,
@@ -761,10 +805,15 @@ class Validator:
         """Tier 4: every cross-ref must resolve in the seen_ids index.
 
         Runs after the per-entity loop, when ``self.seen_ids`` reflects
-        every clean entity in the build set. For each entity, looks at
-        ``content["location"]`` and ``content["destination"]``; if either
-        is a well-shaped cross-ref dict, verifies the
-        ``(deployment_file, deployment_id)`` pair appears in the index.
+        every clean entity in the build set. For each entity, walks:
+
+        - ``content["location"]`` (single cross-ref dict, optional)
+        - ``content["destination"]`` (single cross-ref dict, optional)
+        - ``content["incoming_exits"]`` (list of cross-ref dicts, optional)
+
+        For each well-shaped ref, verifies the
+        ``(deployment_file, deployment_id)`` pair appears in
+        ``self.seen_ids``.
 
         Defensive about malformed shapes — ``isinstance(ref, dict)`` and
         a key-presence check skip any cross-ref that Tier 1 has already
@@ -781,19 +830,37 @@ class Validator:
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
             for field_name in ("location", "destination"):
-                ref = content.get(field_name)
-                if not isinstance(ref, dict):
-                    continue
-                if "deployment_file" not in ref or "deployment_id" not in ref:
-                    continue
-                target_file = ref["deployment_file"]
-                target_id = ref["deployment_id"]
-                if target_id not in self.seen_ids.get(target_file, set()):
-                    self._record_finding(
-                        f"{entity.path}: '{field_name}' cross-ref to "
-                        f"(deployment_file={target_file!r}, deployment_id={target_id}) "
-                        f"does not resolve to any entity in this build"
+                self._check_one_cross_ref(
+                    entity, content.get(field_name), field_name,
+                )
+            incoming = content.get("incoming_exits")
+            if isinstance(incoming, list):
+                for index, ref in enumerate(incoming):
+                    self._check_one_cross_ref(
+                        entity, ref, f"incoming_exits[{index}]",
                     )
+
+    def _check_one_cross_ref(self, entity: LoadedEntity, ref, field_name: str) -> None:
+        """Verify a single cross-ref dict resolves in self.seen_ids.
+
+        Defensive: silently skips non-dict values and dicts missing
+        either required key (Tier 1 has already flagged those). Records
+        a finding only for well-shaped refs whose target isn't in the
+        index — the operator gets one finding per real authoring
+        mistake, not several layered ones.
+        """
+        if not isinstance(ref, dict):
+            return
+        if "deployment_file" not in ref or "deployment_id" not in ref:
+            return
+        target_file = ref["deployment_file"]
+        target_id = ref["deployment_id"]
+        if target_id not in self.seen_ids.get(target_file, set()):
+            self._record_finding(
+                f"{entity.path}: '{field_name}' cross-ref to "
+                f"(deployment_file={target_file!r}, deployment_id={target_id}) "
+                f"does not resolve to any entity in this build"
+            )
 
     def _check_and_record_unique_id(self, entity: LoadedEntity) -> None:
         """Record the entity's deployment_id; flag if already seen for this file.

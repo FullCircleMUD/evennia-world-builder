@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .definitions import Definitions
 from .errors import (
+    LoaderInvalidShapeError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
     ReaderNotFoundError,
@@ -140,25 +141,47 @@ class Loader:
     def _flatten_top_level(self, parsed, path: str, location: dict) -> list:
         """Turn a leaf file's parsed YAML into a flat list of LoadedEntities.
 
-        A YAML file is either a single top-level mapping (one entity) or
-        a list of mappings (many entities); within each top-level entity,
-        a ``contents:`` block may nest further entities. This method
-        handles the file-shape dispatch; ``_flatten`` walks each
-        top-level subtree depth-first pre-order.
+        The library standardises on a single file shape: a top-level
+        mapping with an ``entities:`` key whose value is a list of
+        entity mappings. This method enforces that shape at load time.
 
-        Anything other than a list at the top level (mapping, None, str,
-        etc.) is passed through to ``_flatten`` once — non-mapping
-        bodies emerge as a single LoadedEntity for the validator's
-        existing field-shape predicates to refuse with a clear message.
+        ```yaml
+        entities:
+          - { ... entity 1 ... }
+          - { ... entity 2 ... }
+        # (file-level keys like `incoming_exits:` will live alongside
+        # `entities:` once they're shipped.)
+        ```
+
+        Within each entity in the list, a ``contents:`` and/or ``exits:``
+        block may nest further entities; ``_flatten`` walks each subtree
+        depth-first pre-order so the parent always precedes its children
+        in the returned list.
+
+        Anything else at the top level — a bare list, a mapping without
+        ``entities:``, a non-mapping value — is rejected with
+        ``LoaderInvalidShapeError`` so authors get a clear refusal at
+        load time.
         """
-        if isinstance(parsed, list):
-            results = []
-            for item in parsed:
-                results.extend(
-                    self._flatten(item, path, location, is_nested=False, parent_deployment_id=None),
-                )
-            return results
-        return self._flatten(parsed, path, location, is_nested=False, parent_deployment_id=None)
+        if not isinstance(parsed, dict) or "entities" not in parsed:
+            raise LoaderInvalidShapeError(
+                f"{path!r}: file must be a top-level mapping with an "
+                f"'entities:' key whose value is a list of entity mappings"
+            )
+
+        entity_list = parsed["entities"]
+        if not isinstance(entity_list, list):
+            raise LoaderInvalidShapeError(
+                f"{path!r}: 'entities:' must be a list, "
+                f"got {type(entity_list).__name__}"
+            )
+
+        results = []
+        for item in entity_list:
+            results.extend(
+                self._flatten(item, path, location, is_nested=False, parent_deployment_id=None),
+            )
+        return results
 
     def _flatten(
         self, mapping, path: str, location: dict, is_nested: bool,
