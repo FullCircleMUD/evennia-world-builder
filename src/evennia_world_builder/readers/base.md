@@ -6,30 +6,6 @@ This module defines the **contract** every world-builder source reader satisfies
 
 ---
 
-## Consumes
-
-| What | Used for |
-|---|---|
-| `dataclasses.dataclass` (stdlib) | `ReaderResult`'s frozen-dataclass declaration |
-
-The base contract deliberately depends on nothing else in the library — it sits at the bottom of the dependency graph so concrete readers and downstream pipeline components (Finder, Loader, Validator, Builder) can all import it without cycles.
-
-The typed exception hierarchy referenced in the contract (`ReaderAuthError`, `ReaderNotFoundError`, …) lives in [`errors.py`](../errors.py) and is **not imported here** — it's documented as part of the contract that subclasses must honour, not consumed by the base classes.
-
-## Consumed by
-
-| Consumer | What it uses |
-|---|---|
-| [readers/\_\_init\_\_.py](__init__.py) | Re-exports `Reader`, `ReaderResult` from the package |
-| [readers/github.py](github.py) | `from .base import Reader, ReaderResult` — `GitHubReader(Reader)` subclass |
-| [readers/local.py](local.py) | `from .base import Reader, ReaderResult` — `LocalReader(Reader)` subclass |
-| [definitions.py](../definitions.py) | `Reader` as type hint on `Definitions.from_reader(reader: Reader, …)` |
-| [finder.py](../finder.py) | `Reader` as type hint on `Finder.__init__(reader: Reader, …)` |
-| [loader.py](../loader.py) | `Reader` as type hint on `Loader.__init__(reader: Reader, …)` |
-| [\_\_init\_\_.py](../__init__.py) (top-level) | Re-exports `Reader`, `ReaderResult` as part of the public API |
-
----
-
 ## `ReaderResult`
 
 ### Signature
