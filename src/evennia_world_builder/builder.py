@@ -3,6 +3,7 @@
 from .definitions import Definitions
 from .errors import BuilderError
 from .loader import LoadedEntity
+from .readers.base import Reader
 
 
 # Reserved tag categories — keep in sync with validator's `wb_*` prefix check.
@@ -11,14 +12,24 @@ _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 
 
 class Builder:
-    def __init__(self, definitions: Definitions, *, file_metadata: dict | None = None):
+    def __init__(
+        self, definitions: Definitions, *,
+        file_metadata: dict | None = None,
+        reader: Reader | None = None,
+    ):
         self.definitions = definitions
         self.deleted_count: int = 0
         self._built_by_id: dict = {}
-        # Per-file metadata from Loader.LoadResult — used by pass 3
-        # (dependency restore, step 6e). Plumbed through now; build
-        # loop doesn't consult it yet.
+        # Per-file metadata from Loader.LoadResult — file-level keys
+        # like incoming_exits: extracted by the Loader. Pass 3 walks
+        # this dict's incoming_exits lists for files in the build set.
         self.file_metadata: dict = dict(file_metadata or {})
+        # Reader used by pass 3 to fetch canonical files when an
+        # incoming_exits target is missing from both _built_by_id and
+        # the DB. Optional — Builder constructed without a reader can
+        # still build entities; pass 3 just refuses if it ever needs
+        # to fetch a missing dep.
+        self._reader: Reader | None = reader
 
     def build(self, entities: list) -> list:
         self.deleted_count = 0
@@ -30,7 +41,7 @@ class Builder:
         file_paths = {e.path for e in entities}
         self._cleanup(file_paths)
 
-        # Two-pass: non-exits first so their dbrefs land in _built_by_id,
+        # Pass 1+2: non-exits first so their dbrefs land in _built_by_id,
         # then exits (their destinations may point at any non-exit).
         # `incoming_exits:` is metadata for pass 3 (dependency phase); it
         # is intentionally NOT consulted during passes 1/2 — the entity's
@@ -41,84 +52,201 @@ class Builder:
 
         created = []
         for entity in non_exits + exits:
-            content = entity.content if isinstance(entity.content, dict) else {}
-            # Tier 1 has already validated shape.
-            key = content["name"]
-            typeclass = content["typeclass"]
-            desc = content.get("description", "")
+            created.append(self._build_one(entity, create_object))
 
+        # Pass 3 — incoming_exits dependency restore. Walks
+        # file_metadata for files in the build set; for each registered
+        # ref that's missing from both _built_by_id and the DB, fetches
+        # the canonical file via self._reader and builds the target.
+        created.extend(self._run_pass_3(file_paths, create_object))
+
+        return created
+
+    def _build_one(self, entity: LoadedEntity, create_object) -> object:
+        """Build a single entity through create_object + apply_* steps.
+
+        Used by passes 1, 2, and 3. Resolves the entity's location and
+        (when present) destination via _resolve_cross_ref, calls
+        create_object, stashes the result in _built_by_id keyed by
+        (path, deployment_id), then applies aliases/locks/attributes/
+        tags. Wraps every step in BuilderError so failures surface with
+        contextual messages naming the offending entity.
+        """
+        content = entity.content if isinstance(entity.content, dict) else {}
+        # Tier 1 has already validated shape.
+        key = content["name"]
+        typeclass = content["typeclass"]
+        desc = content.get("description", "")
+
+        try:
+            location = self._resolve_cross_ref(
+                content["location"], entity.path, "location",
+            )
+        except BuilderError:
+            raise
+        except Exception as e:
+            raise BuilderError(
+                f"failed to resolve location for {entity.path!r}: {e}"
+            ) from e
+
+        create_kwargs = dict(
+            typeclass=typeclass,
+            key=key,
+            location=location,
+            attributes=[("desc", desc)],
+        )
+
+        if "destination" in content:
             try:
-                location = self._resolve_cross_ref(
-                    content["location"], entity.path, "location",
+                destination = self._resolve_cross_ref(
+                    content["destination"], entity.path, "destination",
                 )
             except BuilderError:
                 raise
             except Exception as e:
                 raise BuilderError(
-                    f"failed to resolve location for {entity.path!r}: {e}"
+                    f"failed to resolve destination for {entity.path!r}: {e}"
                 ) from e
+            create_kwargs["destination"] = destination
 
-            create_kwargs = dict(
-                typeclass=typeclass,
-                key=key,
-                location=location,
-                attributes=[("desc", desc)],
-            )
+        try:
+            obj = create_object(**create_kwargs)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to create object for {entity.path!r}: {e}"
+            ) from e
 
-            if "destination" in content:
-                try:
-                    destination = self._resolve_cross_ref(
-                        content["destination"], entity.path, "destination",
-                    )
-                except BuilderError:
-                    raise
-                except Exception as e:
+        # Stash for cross-ref resolution within this build pass.
+        self._built_by_id[(entity.path, content["deployment_id"])] = obj
+
+        try:
+            self._apply_aliases(obj, entity)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to apply aliases for {entity.path!r}: {e}"
+            ) from e
+
+        try:
+            self._apply_locks(obj, entity)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to apply locks for {entity.path!r}: {e}"
+            ) from e
+
+        try:
+            self._apply_attributes(obj, entity)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to apply attributes for {entity.path!r}: {e}"
+            ) from e
+
+        try:
+            self._apply_tags(obj, entity)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to apply tags for {entity.path!r}: {e}"
+            ) from e
+
+        return obj
+
+    def _run_pass_3(self, file_paths_in_scope: set, create_object) -> list:
+        """Walk incoming_exits for every file in scope; build any missing refs.
+
+        For each file path in the build set that has file_metadata:
+        - For each `(deployment_file, deployment_id)` ref in its
+          ``incoming_exits:`` list:
+          - If already in ``_built_by_id`` (built during pass 2): skip.
+          - If found via DB tag-search: cache it back into the map and
+            skip (it already exists, no need to rebuild).
+          - Otherwise: fetch the canonical file via the Reader, find
+            the entity by deployment_id, and build it through
+            ``_build_one``.
+
+        The fetched entity goes through ``Loader._flatten_top_level``
+        first so location synthesis applies to nested entities — a
+        nested exit's location is the parent room (correctly resolved
+        via DB fallback when out of scope).
+        """
+        if not self.file_metadata:
+            return []
+
+        created = []
+        for path in file_paths_in_scope:
+            meta = self.file_metadata.get(path)
+            if not isinstance(meta, dict):
+                continue
+            incoming = meta.get("incoming_exits")
+            if not isinstance(incoming, list):
+                continue
+            for ref in incoming:
+                if not isinstance(ref, dict):
+                    continue
+                if "deployment_file" not in ref or "deployment_id" not in ref:
+                    continue
+                key = (ref["deployment_file"], ref["deployment_id"])
+
+                if key in self._built_by_id:
+                    continue
+
+                obj = self._lookup_in_db(*key)
+                if obj is not None:
+                    self._built_by_id[key] = obj
+                    continue
+
+                # Truly missing — fetch and build from canonical file.
+                target_entity = self._fetch_canonical_entity(*key)
+                if target_entity is None:
                     raise BuilderError(
-                        f"failed to resolve destination for {entity.path!r}: {e}"
-                    ) from e
-                create_kwargs["destination"] = destination
-
-            try:
-                obj = create_object(**create_kwargs)
-            except Exception as e:
-                raise BuilderError(
-                    f"failed to create object for {entity.path!r}: {e}"
-                ) from e
-
-            # Stash for child cross-ref resolution within this build pass.
-            self._built_by_id[(entity.path, content["deployment_id"])] = obj
-
-            try:
-                self._apply_aliases(obj, entity)
-            except Exception as e:
-                raise BuilderError(
-                    f"failed to apply aliases for {entity.path!r}: {e}"
-                ) from e
-
-            try:
-                self._apply_locks(obj, entity)
-            except Exception as e:
-                raise BuilderError(
-                    f"failed to apply locks for {entity.path!r}: {e}"
-                ) from e
-
-            try:
-                self._apply_attributes(obj, entity)
-            except Exception as e:
-                raise BuilderError(
-                    f"failed to apply attributes for {entity.path!r}: {e}"
-                ) from e
-
-            try:
-                self._apply_tags(obj, entity)
-            except Exception as e:
-                raise BuilderError(
-                    f"failed to apply tags for {entity.path!r}: {e}"
-                ) from e
-
-            created.append(obj)
+                        f"pass 3: incoming_exits ref "
+                        f"(deployment_file={key[0]!r}, deployment_id={key[1]!r}) "
+                        f"declared by {path!r} not found in canonical file"
+                    )
+                created.append(self._build_one(target_entity, create_object))
 
         return created
+
+    def _fetch_canonical_entity(
+        self, deployment_file: str, deployment_id: int,
+    ) -> LoadedEntity | None:
+        """Fetch a canonical file via the Reader; find the entity by id.
+
+        Runs the file through ``Loader._flatten_top_level`` so location
+        synthesis applies to nested entities (the dependency target is
+        typically a nested exit whose location is the parent room).
+        Returns the LoadedEntity with matching deployment_id, or None
+        if the file doesn't contain such an id.
+        """
+        if self._reader is None:
+            raise BuilderError(
+                f"pass 3: cannot fetch canonical file {deployment_file!r} — "
+                f"Builder constructed without a reader"
+            )
+
+        # Lazy import to avoid circular references at module load time.
+        from .loader import Loader
+
+        try:
+            result = self._reader.read(deployment_file)
+        except Exception as e:
+            raise BuilderError(
+                f"pass 3: failed to read canonical file {deployment_file!r}: {e}"
+            ) from e
+
+        loader = Loader(self._reader, self.definitions)
+        try:
+            entities = loader._flatten_top_level(
+                parsed=result.parsed, path=deployment_file, location={},
+            )
+        except Exception as e:
+            raise BuilderError(
+                f"pass 3: failed to flatten canonical file {deployment_file!r}: {e}"
+            ) from e
+
+        for entity in entities:
+            content = entity.content if isinstance(entity.content, dict) else {}
+            if content.get("deployment_id") == deployment_id:
+                return entity
+        return None
 
     def _resolve_cross_ref(self, ref, entity_path: str, field_name: str):
         if ref is None:

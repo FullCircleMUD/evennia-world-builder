@@ -2987,8 +2987,12 @@ class BuilderTest(TestCase):
             location={}, content=content, path=path, is_nested=is_nested,
         )
 
-    def _builder(self):
-        return Builder(Definitions(levels=("zone",)))
+    def _builder(self, *, file_metadata=None, reader=None):
+        return Builder(
+            Definitions(levels=("zone",)),
+            file_metadata=file_metadata,
+            reader=reader,
+        )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -3459,3 +3463,191 @@ class BuilderTest(TestCase):
         south_kwargs = mock_create.call_args_list[3].kwargs
         self.assertIs(south_kwargs["location"], created["Inn"])
         self.assertIs(south_kwargs["destination"], created["Bakery"])
+
+    # --- pass 3: incoming_exits dependency restore (spike 6 step 6e) ---
+
+    def _make_pass3_reader(self, files: dict):
+        """Build a fixture Reader returning canonical YAML for given files."""
+        return FixtureReader(files)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_pass_3_no_op_when_file_metadata_empty(self, mock_create, _mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity(deployment_id=1, location=None)])
+        # Only the one entity built; no pass 3 work.
+        self.assertEqual(mock_create.call_count, 1)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_pass_3_skips_when_target_already_built_in_pass_2(
+        self, mock_create, _mock_search,
+    ):
+        # bakery.yaml registers (inn.yaml, 2) as an incoming_exit. The
+        # inn's south exit is also being built in this invocation
+        # (pass 2). Pass 3 sees the in-build map hit and skips —
+        # no extra create_object call.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        bakery = self._entity(
+            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+        )
+        inn = self._entity(
+            path="inn.yaml", deployment_id=1, name="Inn", location=None,
+        )
+        south_exit = self._entity(
+            path="inn.yaml", deployment_id=2, name="south",
+            location={"deployment_file": "inn.yaml", "deployment_id": 1},
+            destination={"deployment_file": "bakery.yaml", "deployment_id": 1},
+        )
+        b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
+            {"deployment_file": "inn.yaml", "deployment_id": 2},
+        ]}})
+        b.build([bakery, inn, south_exit])
+        # 3 creates: bakery, inn, south_exit. Pass 3 finds south_exit
+        # already in _built_by_id and skips.
+        self.assertEqual(mock_create.call_count, 3)
+
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_pass_3_skips_when_target_in_db(self, mock_search, mock_create):
+        # Bakery is being rebuilt in scope; inn.yaml is NOT. The inn's
+        # south exit is in the DB (search_tag returns it). Pass 3 finds
+        # it via DB fallback and skips fetching the canonical file.
+        cleanup_response = []
+        db_obj = self._mock_db_obj(deployment_id=2)
+        mock_search.side_effect = [cleanup_response, [db_obj]]
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        bakery = self._entity(
+            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+        )
+        # No reader needed — DB lookup hits before the fetch path.
+        b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
+            {"deployment_file": "inn.yaml", "deployment_id": 2},
+        ]}})
+        b.build([bakery])
+        # Only 1 create (the bakery). Pass 3 found the south exit in DB.
+        self.assertEqual(mock_create.call_count, 1)
+        # And the DB-found object is now cached in the in-build map.
+        self.assertIn(("inn.yaml", 2), b._built_by_id)
+
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_pass_3_fetches_and_builds_missing_dep(
+        self, mock_search, mock_create,
+    ):
+        # Bakery rebuilt in scope; the inn's south exit was cascade-
+        # deleted (DB lookup for it misses) but the inn itself is
+        # still in the DB (Evennia's SET_NULL on db_destination doesn't
+        # cascade-delete the location-side relations). Pass 3 must:
+        # 1. Look up (inn.yaml, 2) → not in DB (cascade-deleted).
+        # 2. Fetch inn.yaml from the Reader.
+        # 3. Build the south exit. Its location (inn.yaml, 1) resolves
+        #    via DB fallback (inn still exists). Its destination
+        #    (bakery.yaml, 1) resolves via _built_by_id (just built).
+        inn_db_mock = self._mock_db_obj(deployment_id=1)
+
+        def fake_search_tag(key, category):
+            # Cleanup queries bakery.yaml (no prior state in this stub).
+            # Pass 3 queries inn.yaml when resolving the south exit's
+            # location (and when checking if the south exit itself is
+            # in the DB). Filter logic in _lookup_in_db decides which
+            # candidate matches the requested deployment_id.
+            if key == "inn.yaml":
+                return [inn_db_mock]
+            return []
+        mock_search.side_effect = fake_search_tag
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw, _key=kw["key"])
+
+        # Canonical inn.yaml contains a top-level inn and its south exit.
+        inn_yaml = {"entities": [{
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "The Crooked Lantern",
+            "location": None,
+            "exits": [{
+                "deployment_id": 2,
+                "typeclass": "evennia.objects.objects.DefaultExit",
+                "name": "south",
+                "destination": {
+                    "deployment_file": "bakery.yaml", "deployment_id": 1,
+                },
+            }],
+        }]}
+        reader = self._make_pass3_reader({
+            "definitions.yaml": {"levels": ["zone"]},
+            "inn.yaml": inn_yaml,
+        })
+
+        bakery = self._entity(
+            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+        )
+        b = self._builder(
+            reader=reader,
+            file_metadata={"bakery.yaml": {"incoming_exits": [
+                {"deployment_file": "inn.yaml", "deployment_id": 2},
+            ]}},
+        )
+        b.build([bakery])
+
+        # Two create_object calls: bakery (pass 1), south exit (pass 3).
+        self.assertEqual(mock_create.call_count, 2)
+        # Pass 3 entity is the south exit — got built with location
+        # resolved to the inn (from DB) and destination resolved to the
+        # just-built bakery (from _built_by_id).
+        pass_3_kwargs = mock_create.call_args_list[1].kwargs
+        self.assertEqual(pass_3_kwargs["key"], "south")
+        # Location resolves to the inn DB mock.
+        self.assertIs(pass_3_kwargs["location"], inn_db_mock)
+        # Destination resolves to the bakery's just-built mock obj.
+        self.assertEqual(pass_3_kwargs["destination"]._key, "Bakery")
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_pass_3_raises_when_no_reader_and_dep_missing(
+        self, mock_create, _mock_search,
+    ):
+        # Builder constructed without a reader. Pass 3 needs to fetch a
+        # canonical file but can't — must raise BuilderError.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        bakery = self._entity(
+            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+        )
+        b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
+            {"deployment_file": "inn.yaml", "deployment_id": 2},
+        ]}})  # NO reader supplied
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([bakery])
+        self.assertIn(
+            "Builder constructed without a reader", str(ctx.exception),
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_pass_3_raises_when_canonical_file_lacks_id(
+        self, mock_create, _mock_search,
+    ):
+        # Author registered (inn.yaml, 99) but inn.yaml has no
+        # deployment_id=99. Pass 3 must refuse with a clear error.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        reader = self._make_pass3_reader({
+            "definitions.yaml": {"levels": ["zone"]},
+            "inn.yaml": {"entities": [{
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "Inn", "location": None,
+            }]},
+        })
+        bakery = self._entity(
+            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+        )
+        b = self._builder(
+            reader=reader,
+            file_metadata={"bakery.yaml": {"incoming_exits": [
+                {"deployment_file": "inn.yaml", "deployment_id": 99},
+            ]}},
+        )
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([bakery])
+        self.assertIn("not found in canonical file", str(ctx.exception))

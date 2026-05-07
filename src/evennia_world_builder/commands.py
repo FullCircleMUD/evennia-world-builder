@@ -319,7 +319,11 @@ class CmdWBBuild(BaseCommand):
             )
             caller.msg(f"      content: {pprint.pformat(entity.content)}")
 
-        builder = Builder(definitions, file_metadata=file_metadata)
+        builder = Builder(
+            definitions,
+            file_metadata=file_metadata,
+            reader=reader,
+        )
         try:
             created = builder.build(entities)
         except BuilderError as e:
