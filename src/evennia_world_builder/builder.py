@@ -187,6 +187,15 @@ class Builder:
                 ) from e
 
             for obj in existing:
+                # Skip ghosts: an earlier delete in this same cleanup
+                # pass may have cascaded (Evennia auto-deletes exits
+                # whose destination was deleted, etc.). The tag-side row
+                # outlives the cascade for this query, so search_tag can
+                # return a handle whose underlying db row is already
+                # gone. Cleanup's post-condition ("the object doesn't
+                # exist after this") is already met — skip silently.
+                if getattr(obj, "pk", None) is None:
+                    continue
                 try:
                     obj.delete()
                 except Exception as e:

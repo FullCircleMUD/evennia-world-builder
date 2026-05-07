@@ -2939,6 +2939,35 @@ class BuilderTest(TestCase):
         self.assertIn("ghost.yaml", msg)
         self.assertIn("deployment_id=99", msg)
 
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_cleanup_skips_cascade_deleted_ghost_objects(
+        self, mock_search, mock_create,
+    ):
+        # When Evennia cascades a delete (e.g. an exit whose destination
+        # room was just deleted in this same cleanup pass), search_tag
+        # can still return a handle for the cascaded-deleted object —
+        # its tag-side row outlives the cascade for the duration of the
+        # query. Calling .delete() on that ghost raises "already deleted!".
+        # Cleanup must defensively skip ghosts (pk is None).
+        ghost = MagicMock()
+        ghost.pk = None
+        ghost.dbref = "#None"
+        live = MagicMock()
+        live.pk = 42
+        live.dbref = "#42"
+        mock_search.return_value = [ghost, live]
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        b = self._builder()
+        b.build([self._entity(deployment_id=1, location=None)])
+
+        # Live object got deleted; ghost was skipped without exception.
+        live.delete.assert_called_once()
+        ghost.delete.assert_not_called()
+        # deleted_count reflects only the explicit deletion.
+        self.assertEqual(b.deleted_count, 1)
+
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
     def test_two_exits_pointing_at_each_other_resolve(self, mock_create, _mock_search):
