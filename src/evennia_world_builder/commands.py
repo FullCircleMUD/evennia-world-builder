@@ -18,6 +18,7 @@ DESIGN/validation-gating.md.
 import pprint
 
 from evennia.commands.command import Command as BaseCommand
+from evennia.utils.utils import run_async
 
 from .builder import Builder
 from .config import get_configured_reader
@@ -102,11 +103,11 @@ def _filter_by_query(entities: list, query: dict) -> list:
 
 
 def _run_validator(
-    caller, definitions, entities, refusal_label, *,
+    messages: list, definitions, entities, refusal_label, *,
     resolve_cross_refs: bool,
     file_metadata: dict | None = None,
 ) -> bool:
-    """Run a Validator pass over entities. Surface every message via caller.
+    """Run a Validator pass over entities. Append every message to ``messages``.
 
     Returns True on a clean pass, False if the validator refused. Callers
     should return early on False. wb_build runs inside Evennia, so the
@@ -117,6 +118,10 @@ def _run_validator(
     incomplete and produce false-positive misses on cross-file refs).
     ``file_metadata`` is the per-file metadata dict from Loader.LoadResult,
     used for file-level checks (incoming_exits shape + Tier 4 resolution).
+
+    Output goes via the ``messages`` list so the caller can flush it to
+    ``caller.msg`` from the reactor thread (this helper itself runs in a
+    Twisted worker thread under run_async).
     """
     validator = Validator(
         definitions,
@@ -127,12 +132,10 @@ def _run_validator(
     try:
         validator.validate(entities)
     except ValidatorError as e:
-        for msg in validator.messages:
-            caller.msg(msg)
-        caller.msg(f"wb_build: refusing to build — {refusal_label}: {e}")
+        messages.extend(validator.messages)
+        messages.append(f"wb_build: refusing to build — {refusal_label}: {e}")
         return False
-    for msg in validator.messages:
-        caller.msg(msg)
+    messages.extend(validator.messages)
     return True
 
 
@@ -177,11 +180,15 @@ class CmdWBBuild(BaseCommand):
     help_category = "World Builder"
 
     def func(self):
-        caller = self.caller
+        # Reactor thread — keep this fast. Args parsing gives the
+        # operator immediate feedback for malformed input. Everything
+        # heavy (network/DB/build) is handed off to a Twisted worker
+        # thread via run_async so the reactor stays free for player
+        # input during long deployments.
         args = (self.args or "").strip()
 
         if not args:
-            caller.msg(
+            self.caller.msg(
                 "wb_build: no scope specified. Use `wb_build all` to build "
                 "the entire world, or specify a query like "
                 "`wb_build zone=millholm`."
@@ -191,34 +198,57 @@ class CmdWBBuild(BaseCommand):
         try:
             query, flags = _parse_args(args)
         except ValueError as e:
-            caller.msg(f"wb_build: {e}")
+            self.caller.msg(f"wb_build: {e}")
             return
+
+        # Hand the pipeline off to a worker thread. caller.msg() can't
+        # be called from the worker safely; the at_return / at_err
+        # callbacks fire back on the reactor and flush the collected
+        # message list there.
+        self.caller.msg("wb_build: running async (gameplay continues)…")
+        run_async(
+            self._run_pipeline, query, flags,
+            at_return=self._on_async_return,
+            at_err=self._on_async_err,
+        )
+
+    def _run_pipeline(self, query: dict, flags: set) -> list:
+        """Worker-thread entrypoint: runs the entire build pipeline.
+
+        Collects every operator-facing line into a list of messages and
+        returns it. ``at_return`` flushes the list via ``caller.msg``
+        on the reactor thread. Errors with operator-meaningful context
+        (validation refusal, build failure, etc.) get appended as
+        messages and the function returns normally; only unexpected
+        exceptions bubble out for the ``at_err`` callback to handle.
+        """
+        messages: list = []
 
         try:
             reader = get_configured_reader()
         except Exception as e:
-            caller.msg(
+            messages.append(
                 f"wb_build: could not construct reader "
                 f"(check WORLDBUILDER_READER and WORLDBUILDER_READER_KWARGS): {e}"
             )
-            return
+            return messages
 
         try:
             definitions = Definitions.from_reader(reader)
         except ReaderError as e:
-            caller.msg(f"wb_build: could not load definitions.yaml: {e}")
-            return
+            messages.append(f"wb_build: could not load definitions.yaml: {e}")
+            return messages
         except DefinitionsError as e:
-            caller.msg(f"wb_build: definitions.yaml is malformed: {e}")
-            return
+            messages.append(f"wb_build: definitions.yaml is malformed: {e}")
+            return messages
 
         try:
             definitions.validate_query(query)
         except DefinitionsError as e:
-            caller.msg(f"wb_build: {e}")
-            return
+            messages.append(f"wb_build: {e}")
+            return messages
 
-        caller.msg(
+        messages.append(
             f"wb_build: levels={list(definitions.levels)}, query={query}, "
             f"flags={sorted(flags)}"
         )
@@ -239,53 +269,53 @@ class CmdWBBuild(BaseCommand):
                 if force_validate
                 else "definitions.repo-ci-pre-validation is False"
             )
-            caller.msg(f"wb_build: pre-validating whole repo ({reason})")
+            messages.append(f"wb_build: pre-validating whole repo ({reason})")
             try:
                 load_result = loader.load(finder.find())
             except FinderManifestError as e:
-                caller.msg(f"wb_build: manifest error during pre-validation: {e}")
-                return
+                messages.append(f"wb_build: manifest error during pre-validation: {e}")
+                return messages
             except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                caller.msg(f"wb_build: pre-validation load failed: {e}")
-                return
+                messages.append(f"wb_build: pre-validation load failed: {e}")
+                return messages
             except ReaderError as e:
-                caller.msg(f"wb_build: read error during pre-validation: {e}")
-                return
+                messages.append(f"wb_build: read error during pre-validation: {e}")
+                return messages
 
             all_entities = load_result.entities
             file_metadata = load_result.file_metadata
 
-            caller.msg(
+            messages.append(
                 f"wb_build: pre-validation loaded {len(all_entities)} "
                 f"entit{'y' if len(all_entities) == 1 else 'ies'} (whole repo)"
             )
             if not _run_validator(
-                caller, definitions, all_entities, "pre-validation failed",
+                messages, definitions, all_entities, "pre-validation failed",
                 resolve_cross_refs=True,
                 file_metadata=file_metadata,
             ):
-                return
+                return messages
 
             entities = _filter_by_query(all_entities, query)
-            caller.msg(
+            messages.append(
                 f"wb_build: filtered to {len(entities)} entit"
                 f"{'y' if len(entities) == 1 else 'ies'} matching scope"
             )
         else:
-            caller.msg(
+            messages.append(
                 "wb_build: skipping pre-validation "
                 "(definitions.repo-ci-pre-validation is True; trusting CI gate)"
             )
             try:
                 found = finder.find(query)
             except FinderQueryError as e:
-                caller.msg(f"wb_build: {e}")
-                return
+                messages.append(f"wb_build: {e}")
+                return messages
             except FinderManifestError as e:
-                caller.msg(f"wb_build: manifest error: {e}")
-                return
+                messages.append(f"wb_build: manifest error: {e}")
+                return messages
 
-            caller.msg(
+            messages.append(
                 f"wb_build: Finder located path={found.path!r}, "
                 f"kind={found.kind}, location={found.location}"
             )
@@ -293,31 +323,31 @@ class CmdWBBuild(BaseCommand):
             try:
                 load_result = loader.load(found)
             except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                caller.msg(f"wb_build: {e}")
-                return
+                messages.append(f"wb_build: {e}")
+                return messages
             except ReaderError as e:
-                caller.msg(f"wb_build: read error during loading: {e}")
-                return
+                messages.append(f"wb_build: read error during loading: {e}")
+                return messages
 
             entities = load_result.entities
             file_metadata = load_result.file_metadata
 
-            caller.msg(
+            messages.append(
                 f"wb_build: Loader returned {len(entities)} entit"
                 f"{'y' if len(entities) == 1 else 'ies'}"
             )
             if not _run_validator(
-                caller, definitions, entities, "validation failed",
+                messages, definitions, entities, "validation failed",
                 resolve_cross_refs=False,
                 file_metadata=file_metadata,
             ):
-                return
+                return messages
 
         for i, entity in enumerate(entities, 1):
-            caller.msg(
+            messages.append(
                 f"  [{i}] {entity.path} — location={entity.location}"
             )
-            caller.msg(f"      content: {pprint.pformat(entity.content)}")
+            messages.append(f"      content: {pprint.pformat(entity.content)}")
 
         builder = Builder(
             definitions,
@@ -327,17 +357,37 @@ class CmdWBBuild(BaseCommand):
         try:
             created = builder.build(entities)
         except BuilderError as e:
-            caller.msg(f"wb_build: build failed: {e}")
-            return
+            messages.append(f"wb_build: build failed: {e}")
+            return messages
 
         if builder.deleted_count:
-            caller.msg(
+            messages.append(
                 f"wb_build: Builder cleaned up {builder.deleted_count} existing "
                 f"object{'' if builder.deleted_count == 1 else 's'} "
                 f"(cleanup-on-rebuild)"
             )
-        caller.msg(
+        messages.append(
             f"wb_build: Builder created {len(created)} object{'' if len(created) == 1 else 's'}:"
         )
         for obj in created:
-            caller.msg(f"  {obj.dbref} {obj.key} ({obj.typeclass_path})")
+            messages.append(f"  {obj.dbref} {obj.key} ({obj.typeclass_path})")
+        return messages
+
+    def _on_async_return(self, messages: list) -> None:
+        """Reactor-thread callback: flush every message to the operator."""
+        for msg in messages or []:
+            self.caller.msg(msg)
+
+    def _on_async_err(self, failure) -> None:
+        """Reactor-thread callback for unexpected pipeline exceptions.
+
+        Any error the pipeline catches itself goes to ``messages`` and
+        comes back through ``_on_async_return``. This handler only
+        fires for exceptions that escape the pipeline (e.g. a Loader
+        bug, a programming error). The Twisted ``Failure`` carries the
+        traceback for log inspection; the operator gets a single line.
+        """
+        self.caller.msg(
+            f"wb_build: unexpected error during async build: "
+            f"{failure.getErrorMessage()}"
+        )
