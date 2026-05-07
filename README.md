@@ -26,7 +26,7 @@ The library's pipeline reads → validates → builds YAML world content into Ev
 
 Two surfaces:
 
-- **`wb_build`** — in-game admin command (auto-installed into `AccountCmdSet`, superuser-only). Runs the full pipeline including the Builder.
+- **`wb_build`** — in-game admin command (auto-installed into `AccountCmdSet`, superuser-only). Runs the full pipeline including the Builder. **Defers the pipeline to a Twisted worker thread** via `evennia.utils.utils.run_async`, so long deployments don't block the reactor — players continue playing while a build runs.
 - **`wb-validate`** — standalone console-script CLI for CI / pre-commit / local iteration. Runs everything up to but excluding the Builder.
 
 ## Is this for me?
