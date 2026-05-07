@@ -2518,8 +2518,11 @@ class BuilderTest(TestCase):
     of these tests.
     """
 
+    _NO_DESTINATION = object()  # sentinel — distinguish "omit field" from None
+
     def _entity(
         self, *, path="x.yaml", deployment_id=1, location=None,
+        destination=_NO_DESTINATION,
         is_nested=False, name="X", typeclass="ev.X",
     ) -> LoadedEntity:
         content = {
@@ -2528,6 +2531,8 @@ class BuilderTest(TestCase):
             "typeclass": typeclass,
             "location": location,
         }
+        if destination is not self._NO_DESTINATION:
+            content["destination"] = destination
         return LoadedEntity(
             location={}, content=content, path=path, is_nested=is_nested,
         )
@@ -2573,7 +2578,8 @@ class BuilderTest(TestCase):
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
     def test_unresolved_cross_ref_raises(self, mock_create, _mock_search):
-        # No parent entity in the build set — child's cross-ref must fail.
+        # No parent entity in the build set AND DB lookup returns nothing
+        # (search_tag mocked to []) — child's cross-ref must fail.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         orphan_child = self._entity(
             deployment_id=2, is_nested=True,
@@ -2582,8 +2588,23 @@ class BuilderTest(TestCase):
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([orphan_child])
-        self.assertIn("no such entity has been built", str(ctx.exception))
+        self.assertIn("does not resolve", str(ctx.exception))
         self.assertIn("deployment_id=99", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_cross_ref_error_names_field(self, mock_create, _mock_search):
+        # The error message identifies which field carried the unresolved
+        # ref — relevant once destination joins location in step 5b.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        orphan_child = self._entity(
+            deployment_id=2, is_nested=True,
+            location={"deployment_file": "x.yaml", "deployment_id": 99},
+        )
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([orphan_child])
+        self.assertIn("'location'", str(ctx.exception))
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -2657,4 +2678,305 @@ class BuilderTest(TestCase):
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([a, b_entity])
-        self.assertIn("no such entity has been built", str(ctx.exception))
+        self.assertIn("does not resolve", str(ctx.exception))
+
+    # --- two-pass dispatch: exits build after non-exits (spike 4 step 5b) ---
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_non_exit_does_not_pass_destination_kwarg(self, mock_create, _mock_search):
+        # Regression: regular entities (no destination field) call
+        # create_object WITHOUT a destination kwarg.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity(deployment_id=1, location=None)])
+        self.assertNotIn("destination", mock_create.call_args_list[0].kwargs)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_exit_passes_destination_to_create_object(self, mock_create, _mock_search):
+        # Bakery + exit-from-bakery-to-bakery (self-link, just so the
+        # destination resolves within the build). create_object for the
+        # exit is called with destination=bakery_obj.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        bakery = self._entity(
+            deployment_id=1, name="Bakery", location=None,
+        )
+        exit_entity = self._entity(
+            deployment_id=2, name="north",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            destination={"deployment_file": "x.yaml", "deployment_id": 1},
+        )
+
+        b = self._builder()
+        b.build([bakery, exit_entity])
+
+        bakery_obj = created[0]
+        exit_call_kwargs = mock_create.call_args_list[1].kwargs
+        self.assertIs(exit_call_kwargs["location"], bakery_obj)
+        self.assertIs(exit_call_kwargs["destination"], bakery_obj)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_exits_built_after_non_exits_regardless_of_yaml_order(
+        self, mock_create, _mock_search,
+    ):
+        # YAML order interleaves non-exits and exits. The two-pass
+        # dispatch must put all non-exits first, then all exits, so the
+        # exits' destinations can resolve to just-built rooms.
+        created_order = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw, key=kw["key"])
+            created_order.append(kw["key"])
+            return obj
+        mock_create.side_effect = make
+
+        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        # Exit appears BEFORE the inn in the entity list, but the inn is
+        # the destination — so without two-pass, this would fail.
+        exit_to_inn = self._entity(
+            deployment_id=2, name="north",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            destination={"deployment_file": "x.yaml", "deployment_id": 3},
+        )
+        inn = self._entity(deployment_id=3, name="Inn", location=None)
+
+        b = self._builder()
+        b.build([bakery, exit_to_inn, inn])
+
+        # Non-exits first (Bakery, Inn), then exits (north).
+        self.assertEqual(created_order, ["Bakery", "Inn", "north"])
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_exit_destination_resolves_via_built_by_id(self, mock_create, _mock_search):
+        # End-to-end: bakery + inn + bakery→inn exit. The exit's
+        # destination resolves to the inn object that was built in pass 1.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw, key=kw["key"])
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        inn = self._entity(deployment_id=2, name="Inn", location=None)
+        exit_entity = self._entity(
+            deployment_id=3, name="north",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            destination={"deployment_file": "x.yaml", "deployment_id": 2},
+        )
+
+        b = self._builder()
+        b.build([bakery, inn, exit_entity])
+
+        # created order matches non-exits-then-exits → [bakery, inn, exit]
+        bakery_obj, inn_obj, _ = created
+        exit_kwargs = mock_create.call_args_list[2].kwargs
+        self.assertIs(exit_kwargs["location"], bakery_obj)
+        self.assertIs(exit_kwargs["destination"], inn_obj)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_destination_error_names_destination_field(
+        self, mock_create, _mock_search,
+    ):
+        # Exit with a destination cross-ref pointing at nothing in the
+        # build set — error message identifies 'destination' specifically.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        broken_exit = self._entity(
+            deployment_id=2, name="north",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            destination={"deployment_file": "x.yaml", "deployment_id": 99},
+        )
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([bakery, broken_exit])
+        msg = str(ctx.exception)
+        self.assertIn("'destination'", msg)
+        self.assertIn("deployment_id=99", msg)
+
+    # --- DB tag-search fallback for cross-file refs (spike 4 step 5c) ---
+
+    def _mock_db_obj(self, *, deployment_id):
+        # Helper: a MagicMock shaped like a tagged Evennia object —
+        # `obj.tags.get(category="wb_deployment_id", return_list=True)`
+        # returns the right list of strings for filter matching.
+        obj = MagicMock()
+        obj.tags.get.return_value = [str(deployment_id)]
+        return obj
+
+    @patch("evennia.utils.search.search_tag")
+    def test_lookup_in_db_returns_match(self, mock_search):
+        target = self._mock_db_obj(deployment_id=1)
+        mock_search.return_value = [target]
+        b = self._builder()
+        result = b._lookup_in_db("a.yaml", 1)
+        self.assertIs(result, target)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    def test_lookup_in_db_returns_none_when_no_file_match(self, _mock_search):
+        b = self._builder()
+        self.assertIsNone(b._lookup_in_db("a.yaml", 1))
+
+    @patch("evennia.utils.search.search_tag")
+    def test_lookup_in_db_returns_none_when_no_id_match(self, mock_search):
+        # File has objects but none with deployment_id=99.
+        mock_search.return_value = [
+            self._mock_db_obj(deployment_id=1),
+            self._mock_db_obj(deployment_id=2),
+        ]
+        b = self._builder()
+        self.assertIsNone(b._lookup_in_db("a.yaml", 99))
+
+    @patch("evennia.utils.search.search_tag")
+    def test_lookup_in_db_filters_by_deployment_id(self, mock_search):
+        # Multiple objects from same file; filter picks the right one.
+        wrong = self._mock_db_obj(deployment_id=1)
+        right = self._mock_db_obj(deployment_id=42)
+        mock_search.return_value = [wrong, right]
+        b = self._builder()
+        result = b._lookup_in_db("a.yaml", 42)
+        self.assertIs(result, right)
+
+    @patch("evennia.utils.search.search_tag")
+    def test_lookup_in_db_raises_on_multiple_matches(self, mock_search):
+        # Cleanup integrity invariant violated — two objects share the
+        # same (file, deployment_id) tag pair. Fail loudly.
+        mock_search.return_value = [
+            self._mock_db_obj(deployment_id=1),
+            self._mock_db_obj(deployment_id=1),
+        ]
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b._lookup_in_db("a.yaml", 1)
+        self.assertIn("multiple objects", str(ctx.exception))
+        self.assertIn("cleanup integrity", str(ctx.exception))
+
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_cross_ref_falls_through_to_db_on_in_build_miss(
+        self, mock_search, mock_create,
+    ):
+        # Single child entity references a parent that's NOT in the build
+        # set. The DB has it (search_tag returns the tagged object on the
+        # second call — first call is the cleanup query). _resolve_cross_ref
+        # falls through, finds it, passes it as `location=` to create_object.
+        cleanup_response = []                       # cleanup: nothing to delete
+        db_obj = self._mock_db_obj(deployment_id=1)
+        # search_tag is called: (1) once per file in cleanup, (2) once per
+        # cross-ref lookup. Distinguish via side_effect list.
+        mock_search.side_effect = [cleanup_response, [db_obj]]
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        child = self._entity(
+            deployment_id=2, is_nested=True,
+            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+        )
+        b = self._builder()
+        b.build([child])
+
+        # create_object was called with the DB-resolved object as location.
+        self.assertIs(mock_create.call_args.kwargs["location"], db_obj)
+
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_db_fallback_caches_back_into_built_by_id(
+        self, mock_search, mock_create,
+    ):
+        # Two children both point at the same DB-only target. The DB
+        # should be queried ONCE — the first lookup caches the object
+        # into _built_by_id; the second hits the in-memory map.
+        cleanup_response = []
+        db_obj = self._mock_db_obj(deployment_id=1)
+        mock_search.side_effect = [cleanup_response, [db_obj]]
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        c1 = self._entity(
+            deployment_id=10, is_nested=True, name="c1",
+            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+        )
+        c2 = self._entity(
+            deployment_id=11, is_nested=True, name="c2",
+            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+        )
+
+        b = self._builder()
+        b.build([c1, c2])
+
+        # search_tag called: 1× cleanup + 1× DB lookup = 2 calls total.
+        # If cache-back failed, we'd see 3 (a second DB lookup for c2).
+        self.assertEqual(mock_search.call_count, 2)
+        # Both children received the same db_obj as their location.
+        self.assertIs(mock_create.call_args_list[0].kwargs["location"], db_obj)
+        self.assertIs(mock_create.call_args_list[1].kwargs["location"], db_obj)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_when_db_misses_too(self, mock_create, _mock_search):
+        # In-build map miss + DB miss → BuilderError mentions both
+        # failure modes.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        orphan = self._entity(
+            deployment_id=2, is_nested=True,
+            location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+        )
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([orphan])
+        msg = str(ctx.exception)
+        self.assertIn("neither built in this pass nor present in the DB", msg)
+        self.assertIn("ghost.yaml", msg)
+        self.assertIn("deployment_id=99", msg)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_two_exits_pointing_at_each_other_resolve(self, mock_create, _mock_search):
+        # Bidirectional exits: bakery → inn AND inn → bakery in the same
+        # build. Both exits build in pass 2 by YAML order, so the
+        # second exit's destination resolves to the first exit's already-
+        # built (in pass 2) parent room. (The point of the test isn't
+        # exit→exit refs — it's that two exits in pass 2 are both able
+        # to resolve their destinations to the rooms built in pass 1.)
+        created = {}
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw, key=kw["key"])
+            created[kw["key"]] = obj
+            return obj
+        mock_create.side_effect = make
+
+        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        inn = self._entity(deployment_id=2, name="Inn", location=None)
+        north = self._entity(
+            deployment_id=3, name="north",
+            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            destination={"deployment_file": "x.yaml", "deployment_id": 2},
+        )
+        south = self._entity(
+            deployment_id=4, name="south",
+            location={"deployment_file": "x.yaml", "deployment_id": 2},
+            destination={"deployment_file": "x.yaml", "deployment_id": 1},
+        )
+
+        b = self._builder()
+        b.build([bakery, inn, north, south])
+
+        # north (in bakery, → inn)
+        north_kwargs = mock_create.call_args_list[2].kwargs
+        self.assertIs(north_kwargs["location"], created["Bakery"])
+        self.assertIs(north_kwargs["destination"], created["Inn"])
+        # south (in inn, → bakery)
+        south_kwargs = mock_create.call_args_list[3].kwargs
+        self.assertIs(south_kwargs["location"], created["Inn"])
+        self.assertIs(south_kwargs["destination"], created["Bakery"])

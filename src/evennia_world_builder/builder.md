@@ -82,20 +82,31 @@ The single public method. Returns the list of created Evennia objects on success
 1. Reset `deleted_count = 0` and `_built_by_id = {}` (per-build state).
 2. Lazy-import `evennia.utils.create.create_object`.
 3. **Cleanup pass:** call `_cleanup(file_paths)` against the unique set of source files in the entity list (see `_cleanup` below).
-4. **Per-entity construction**, in order — for each entity:
-   1. Resolve `content["location"]` via `_resolve_location` (null → None, cross-ref dict → parent object).
-   2. Call `create_object(typeclass, key=name, location=location, attributes=[("desc", description)])`.
-   3. Stash the freshly-built object in `_built_by_id` keyed by `(entity.path, content["deployment_id"])` — so any child entity following in this build pass can resolve its location cross-ref to this object.
-   4. Apply aliases via `_apply_aliases`.
-   5. Apply locks via `_apply_locks`.
-   6. Apply attributes via `_apply_attributes`.
-   7. Apply tags via `_apply_tags` (author tags + the auto-set `wb_deployment_file` / `wb_deployment_id` pair).
-5. Return the list of created objects.
+4. **Two-pass partition:** split the entity list into `non_exits` (entities without a `destination:` field) and `exits` (entities with one). Iterate `non_exits + exits` so every non-exit is built before any exit — this guarantees an exit's destination cross-ref always resolves to a non-exit room that's already in `_built_by_id`. Within each pass, entity order is preserved (depth-first pre-order from the Loader for nested entities; YAML order for top-level entities).
+5. **Per-entity construction** — for each entity in the partitioned order:
+   1. Resolve `content["location"]` via `_resolve_cross_ref` (null → None, cross-ref dict → parent object).
+   2. Build `create_kwargs` (`typeclass`, `key`, `location`, `attributes=[("desc", desc)]`).
+   3. If `"destination" in content`: resolve via `_resolve_cross_ref` and add `destination=` to `create_kwargs`.
+   4. Call `create_object(**create_kwargs)`.
+   5. Stash the freshly-built object in `_built_by_id` keyed by `(entity.path, content["deployment_id"])` — so any subsequent entity in this build pass can resolve its cross-refs to this object.
+   6. Apply aliases via `_apply_aliases`.
+   7. Apply locks via `_apply_locks`.
+   8. Apply attributes via `_apply_attributes`.
+   9. Apply tags via `_apply_tags` (author tags + the auto-set `wb_deployment_file` / `wb_deployment_id` pair).
+6. Return the list of created objects.
+
+#### Two-pass dispatch
+
+The partition is determined by `"destination" in content` — the same signal the Validator uses to decide an entity is an exit. The two-pass model is required (not just preferred) because:
+
+- **Bidirectional exits force forward refs.** Bakery → Inn AND Inn → Bakery. Whichever direction is built first has a destination ref pointing at a not-yet-built room.
+- **Ordering alone can't solve it.** No YAML ordering of the non-exit rooms can satisfy both directions simultaneously.
+- **Two-pass is sufficient.** If all non-exit rooms are built first (pass 1), every exit's destination is guaranteed to resolve in pass 2 — destinations are always rooms (or, theoretically, other exits, but the partition handles that case too: exits-pointing-at-exits resolve in YAML order during pass 2).
 
 #### Per-entity construction order
 
 ```
-_resolve_location → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags
+_resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags
 ```
 
 `create_object` triggers the typeclass's `at_object_creation()` hook, which can set its own default attributes (e.g. `self.db.room_type = "bakery"`). Any subsequent `_apply_*` call overwrites those defaults if the YAML declares the same key. **Contract: typeclass declares defaults; YAML overrides per-instance.**
@@ -112,6 +123,7 @@ The Validator's Tier 1 predicates have already guaranteed:
 Optional fields:
 
 - `content["description"]` — string, written to `db.desc` via the `attributes` kwarg of `create_object` (default `""`).
+- `content["destination"]` — strict `{deployment_file, deployment_id}` cross-ref dict. Presence makes the entity an exit (built in pass 2). Validator Tier 1 has guaranteed shape; Tier 3 has guaranteed it's consistent with the typeclass (DefaultExit-derived ⇒ required; otherwise ⇒ forbidden); Tier 4 (when run) has guaranteed the ref resolves in `seen_ids`.
 - `content["aliases"]` — list of non-empty strings.
 - `content["locks"]` — non-empty lockstring.
 - `content["attributes"]` — list of `{key, value, category?}` records.
@@ -121,30 +133,60 @@ Optional fields:
 
 Each step is wrapped in a typed `try/except` that re-raises as `BuilderError` with a contextual message naming the offending entity path and (where applicable) the field that failed. The wrapped exception chain (`from e`) preserves the underlying Evennia exception for debugging.
 
-`_resolve_location` already raises `BuilderError` directly (its message has more specific context); the build loop re-raises that as-is rather than wrapping it again.
+`_resolve_cross_ref` already raises `BuilderError` directly (its message has more specific context); the build loop re-raises that as-is rather than wrapping it again.
 
 `wb_build` catches `BuilderError` and surfaces it via `caller.msg`, then refuses without continuing — partial state is never returned.
 
-### `_resolve_location(loc_ref, entity_path)`
+### `_resolve_cross_ref(ref, entity_path, field_name)`
 
 ```python
-def _resolve_location(self, loc_ref, entity_path: str)
+def _resolve_cross_ref(self, ref, entity_path: str, field_name: str)
 ```
 
-Turn a `content["location"]` value into the argument to pass as `create_object(location=…)`.
+Turn a `content["location"]` or `content["destination"]` value into the corresponding argument for `create_object`. Single helper for both fields — the only difference between location and destination resolution is the value the caller passes; the lookup logic is identical.
 
-- **`None`** ⇒ `None` (orphan placement).
-- **Cross-ref dict `{deployment_file, deployment_id}`** ⇒ the Evennia object stashed under that key in `self._built_by_id`. The Loader synthesises this dict on every nested entity at flatten time, pointing at the parent's `(path, deployment_id)`; the parent is built earlier in this same `build()` pass (Loader emits depth-first pre-order), so the lookup always hits.
+- **`None`** ⇒ `None` (orphan placement; `location:` only — destination null is refused at validate time).
+- **Cross-ref dict `{deployment_file, deployment_id}`** ⇒ a two-step lookup:
+  1. **In-build map first.** Try `self._built_by_id[(deployment_file, deployment_id)]`. Hits when the target was built earlier in this same `build()` call.
+  2. **DB fallback** if step 1 misses. Call `_lookup_in_db(deployment_file, deployment_id)` to find an existing object in the database tagged with that identity pair.
+  3. If the DB lookup also misses, raise `BuilderError` naming the field, the `(deployment_file, deployment_id)` pair, and the likely causes.
 
-The Validator's `_check_location_well_formed` has already guaranteed the value is `null` or a well-shaped cross-ref dict, so this method trusts shape. No defensive `isinstance` checks beyond `loc_ref is None`.
+  **DB hits are cached back into `_built_by_id`** before returning, so subsequent refs to the same target in this build pass don't re-query — one DB query per cross-file target, regardless of how many entities reference it.
 
-#### Cross-file refs (deferred to spike 4 step 5)
+The Validator's `_check_location_well_formed` and `_check_destination_well_formed` have already guaranteed the value is `null` or a well-shaped cross-ref dict, so this method trusts shape.
 
-Cross-file refs to entities *not* built in this invocation (i.e. another file's content already in the DB from a previous build) will land as a fall-through to a tag-search query (`evennia.utils.search.search_tag(key=path, category="wb_deployment_file")` filtered to the right `deployment_id`). For now they raise `BuilderError`.
+#### Cross-file refs
+
+Cross-file refs to entities *not* built in this invocation (i.e. another file's content already in the DB from a previous build) resolve via the DB fallback in step 2 above. Operators can rebuild a single file (`wb_build zone=millholm room=bakery`) and exits/locations pointing into other files still resolve, as long as the target file has been built at some point.
 
 #### Same-file forward refs
 
 A top-level entity declaring `location:` to point at another top-level entity later in the same file would miss the lookup (the parent hasn't been built yet at this point in the iteration). The Builder refuses with `BuilderError` — the author has to reorder. Validator Tier 4 sees forward refs as valid (`seen_ids` is fully built before Tier 4 runs); the Builder's create-time refusal is the load-bearing distinction between "ref is correct in the abstract" and "ref can be used at this point in the build."
+
+Note that this restriction does not apply to **destinations on exits**: the two-pass build (see `build()` above) builds every non-exit before any exit, so destination cross-refs always resolve as long as the target is in the build set, regardless of YAML order.
+
+### `_lookup_in_db(deployment_file, deployment_id)`
+
+```python
+def _lookup_in_db(self, deployment_file: str, deployment_id: int)
+```
+
+Find an existing Evennia object tagged with the given `(deployment_file, deployment_id)` identity pair. The DB-side counterpart to the in-build `_built_by_id` map — used by `_resolve_cross_ref` to resolve cross-file refs to entities already in the database from a previous build invocation.
+
+#### Algorithm
+
+1. Lazy-import `evennia.utils.search.search_tag`.
+2. Query `search_tag(key=deployment_file, category="wb_deployment_file")` → list of all objects from that file.
+3. Filter by `wb_deployment_id` tag matching `str(deployment_id)`.
+4. Return the matching object, `None` (no match), or raise `BuilderError` (multiple matches).
+
+#### Why filter client-side instead of intersecting two `search_tag` calls
+
+Filtering candidates from a single file-level query is cheaper than two `search_tag` calls + an intersection. The number of objects per file is typically small (the file's declared entity count) so the in-Python filter is fast.
+
+#### Multiple matches
+
+A pair of `(deployment_file, deployment_id)` is contractually unique across the whole world (per the [deployment-identity contract](../../DESIGN/deployment-identity.md)). If `_lookup_in_db` finds more than one match, that's a cleanup-on-rebuild integrity failure — a previous build's orphan tagged objects weren't cleaned up. The method raises `BuilderError` rather than silently picking one, so the operator gets clear evidence of the corruption.
 
 ### `_cleanup(file_paths)`
 
@@ -240,14 +282,41 @@ A free function (not a method) because it doesn't depend on Builder state — ke
 
 ## Tests
 
+Tests use `unittest.mock.patch` against `evennia.utils.create.create_object` and `evennia.utils.search.search_tag` — the Builder is exercised without a live Evennia DB, focusing on the orchestration logic (what it decides to pass to `create_object`) rather than the DB write itself.
+
+### Cleanup + create + per-entity-construction (spike 1, 2)
+
 | Test | Covers | Location |
 |---|---|---|
-| `BuilderTest.test_orphan_passes_none_as_location` | Orphan entity (location=None) → `create_object(location=None)` | [tests.py:2540](tests.py#L2540) |
-| `BuilderTest.test_cross_ref_resolves_to_parent_obj` | Cross-ref location resolves to the parent's just-built mock object | [tests.py:2548](tests.py#L2548) |
-| `BuilderTest.test_unresolved_cross_ref_raises` | Unresolved cross-ref raises `BuilderError` with "no such entity has been built" message | [tests.py:2575](tests.py#L2575) |
-| `BuilderTest.test_built_by_id_populated_after_build` | `_built_by_id` map populated correctly with multi-entity, multi-file builds | [tests.py:2590](tests.py#L2590) |
-| `BuilderTest.test_built_by_id_resets_between_builds` | Map resets between consecutive `build()` calls | [tests.py:2604](tests.py#L2604) |
-| `BuilderTest.test_deeply_nested_each_child_uses_immediate_parent` | Depth-3 nesting: each child placed in its *immediate* parent (gem in backpack in room) | [tests.py:2615](tests.py#L2615) |
-| `BuilderTest.test_same_file_forward_ref_refused` | Same-file forward ref raises `BuilderError` (author must reorder) | [tests.py:2646](tests.py#L2646) |
+| `BuilderTest.test_orphan_passes_none_as_location` | Orphan entity (location=None) → `create_object(location=None)` | [tests.py:2545](tests.py#L2545) |
+| `BuilderTest.test_cross_ref_resolves_to_parent_obj` | Cross-ref location resolves to the parent's just-built mock object | [tests.py:2553](tests.py#L2553) |
+| `BuilderTest.test_unresolved_cross_ref_raises` | Unresolved cross-ref raises `BuilderError` with "does not resolve" wording | [tests.py:2580](tests.py#L2580) |
+| `BuilderTest.test_unresolved_cross_ref_error_names_field` | Error message identifies the field (`'location'`) carrying the unresolved ref | [tests.py:2596](tests.py#L2596) |
+| `BuilderTest.test_built_by_id_populated_after_build` | `_built_by_id` map populated correctly with multi-entity, multi-file builds | [tests.py:2611](tests.py#L2611) |
+| `BuilderTest.test_built_by_id_resets_between_builds` | Map resets between consecutive `build()` calls | [tests.py:2625](tests.py#L2625) |
+| `BuilderTest.test_deeply_nested_each_child_uses_immediate_parent` | Depth-3 nesting: each child placed in its *immediate* parent (gem in backpack in room) | [tests.py:2636](tests.py#L2636) |
+| `BuilderTest.test_same_file_forward_ref_refused` | Same-file forward `location:` ref raises `BuilderError` (author must reorder) | [tests.py:2667](tests.py#L2667) |
 
-Tests use `unittest.mock.patch` against `evennia.utils.create.create_object` and `evennia.utils.search.search_tag` — the Builder is exercised without a live Evennia DB, focusing on the orchestration logic (what it decides to pass to `create_object`) rather than the DB write itself.
+### Two-pass dispatch + destination resolution (spike 4 step 5b)
+
+| Test | Covers | Location |
+|---|---|---|
+| `BuilderTest.test_non_exit_does_not_pass_destination_kwarg` | Non-exit entities call `create_object` without a `destination=` kwarg | [tests.py:2687](tests.py#L2687) |
+| `BuilderTest.test_exit_passes_destination_to_create_object` | Exit entity → `create_object` called with both `location=` and `destination=` resolved to parent objects | [tests.py:2697](tests.py#L2697) |
+| `BuilderTest.test_exits_built_after_non_exits_regardless_of_yaml_order` | Two-pass dispatch: non-exits always built before exits, even when YAML order interleaves | [tests.py:2728](tests.py#L2728) |
+| `BuilderTest.test_exit_destination_resolves_via_built_by_id` | End-to-end bakery + inn + bakery→inn exit; destination resolves to inn built in pass 1 | [tests.py:2760](tests.py#L2760) |
+| `BuilderTest.test_unresolved_destination_error_names_destination_field` | Unresolved destination → error names `'destination'` (not `'location'`) | [tests.py:2790](tests.py#L2790) |
+| `BuilderTest.test_two_exits_pointing_at_each_other_resolve` | Bidirectional exits (north/south between two rooms) — both resolve in pass 2 | [tests.py:2944](tests.py#L2944) |
+
+### DB tag-search fallback for cross-file refs (spike 4 step 5c)
+
+| Test | Covers | Location |
+|---|---|---|
+| `BuilderTest.test_lookup_in_db_returns_match` | `_lookup_in_db` returns the single matching tagged object | [tests.py:2820](tests.py#L2820) |
+| `BuilderTest.test_lookup_in_db_returns_none_when_no_file_match` | No objects from that file → returns `None` | [tests.py:2828](tests.py#L2828) |
+| `BuilderTest.test_lookup_in_db_returns_none_when_no_id_match` | File has objects but none with the requested deployment_id → returns `None` | [tests.py:2833](tests.py#L2833) |
+| `BuilderTest.test_lookup_in_db_filters_by_deployment_id` | Multiple file matches, deployment_id filter picks the right one | [tests.py:2843](tests.py#L2843) |
+| `BuilderTest.test_lookup_in_db_raises_on_multiple_matches` | Cleanup integrity failure (two objects with same identity pair) → `BuilderError` | [tests.py:2853](tests.py#L2853) |
+| `BuilderTest.test_cross_ref_falls_through_to_db_on_in_build_miss` | In-build miss → DB fallback hit → `create_object(location=db_obj)` | [tests.py:2868](tests.py#L2868) |
+| `BuilderTest.test_db_fallback_caches_back_into_built_by_id` | Two refs to same DB-only target → one DB query (cache-back) | [tests.py:2894](tests.py#L2894) |
+| `BuilderTest.test_unresolved_when_db_misses_too` | In-build miss + DB miss → `BuilderError` with "neither built nor present in the DB" wording | [tests.py:2926](tests.py#L2926) |
