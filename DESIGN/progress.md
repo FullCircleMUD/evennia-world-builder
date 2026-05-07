@@ -2,6 +2,28 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-05-07
+
+- **Spike 4 — `exits:` recursion + cross-reference resolution — fully shipped (step 5).** The Builder grew the two-pass dispatch and DB tag-search fallback that complete the spike. Live verified end-to-end against the test repo: `wb_build all` builds 9 objects with bidirectional bakery↔inn exits both traversable; `wb_build zone=millholm room=bakery` rebuilds just the bakery's file and the new `north` exit's destination resolves to the unchanged inn (#8) via the DB fallback (no error, no manual rebuild required). 258 unit tests green (242 → 258, +16 across the four sub-steps).
+
+  - **Step 5a — Generalise the location resolver.** `Builder._resolve_location` → `_resolve_cross_ref(ref, entity_path, field_name)`. Same logic, parameterised so location and destination can both call into it. Error message names the field so unresolved refs surface clearly which side carried the bad pointer. +1 test.
+
+  - **Step 5b — Two-pass build dispatch.** `Builder.build()` partitions entities by `"destination" in content` and iterates `non_exits + exits`. Pass 1 populates `_built_by_id`; pass 2 resolves both `location:` and `destination:` against the populated map. Required (not just preferred) because bidirectional exits force forward refs — bakery → inn AND inn → bakery means whichever direction is built first has a destination ref pointing at a not-yet-built room. The two-pass model is applied surgically (rather than universally) — single-pass still works for `contents:`-style placements, where the Loader's depth-first pre-order guarantees the parent is already built. +6 tests.
+
+  - **Step 5c — DB tag-search fallback for cross-file refs.** New `Builder._lookup_in_db(deployment_file, deployment_id)` queries `evennia.utils.search.search_tag(key=path, category="wb_deployment_file")` and filters candidates by `wb_deployment_id` tag; raises `BuilderError` on multi-match cleanup-integrity failure. `_resolve_cross_ref` now falls through to it on in-build map miss and **caches DB hits back into `_built_by_id`** so subsequent refs to the same target don't re-query. Means operators can rebuild a single file (`wb_build zone=millholm room=bakery`) and exits/locations pointing into other files still resolve as long as the target file has been built at some point. +8 tests.
+
+  - **Step 5d — Live smoke + doc updates.** Bidirectional bakery↔inn exits added to test-repo `bakery.yaml` and `inn.yaml`. `wb_build all` then `wb_build zone=millholm room=bakery` both verified in-game; both `north` and `south` traversable after `all`; `north` works after the scoped rebuild via DB fallback to the unchanged inn. Cross-file rebuild dependency confirmed as documented (the inn's untouched `south` exit references the deleted-then-replaced bakery dbref after a scoped rebuild — operator must rebuild `inn.yaml` to restore it; flagged as deferred in `DESIGN/builder.md`). `src/evennia_world_builder/builder.md` and `DESIGN/builder.md` both refreshed.
+
+  - **Cascade-deleted ghost fix.** Surfaced by step-5d live smoke: when `_cleanup` deletes a room whose exits live in another file, Evennia auto-cascades the delete to those exits (their `db_destination` FK has CASCADE behaviour). The cascade leaves the tag-side row stale for the duration of the cleanup pass, so when `_cleanup` later iterates the other file's tags via `search_tag`, the result includes a handle for an already-deleted db row. Calling `.delete()` on it raised "This object was already deleted!" and the build refused. Fix: defensive `obj.pk is None` skip in the cleanup loop. The cascade has already met the post-condition; the tag-side ghost is harmless. +1 test.
+
+  Spike 4 is now complete end-to-end. The library can read, validate, and build a YAML world with arbitrary `contents:` nesting and bidirectional `exits:` connections, idempotently, with cross-file cross-reference support — the full feature set originally scoped for the `evennia-world-builder` v0.
+
+  Pending follow-ups (deferred per documented design discussions, not blocking):
+
+  - **Same-file forward-ref refusal at validate time** (validator side). Today the Builder refuses forward `location:` refs at create time; Tier 4 sees them as valid because `seen_ids` is built before Tier 4 runs.
+  - **Strict attribute validation** — typeclass-introspection check rejecting YAML attributes whose key isn't declared on the typeclass.
+  - **Cross-file rebuild dependency reconciliation** — when file B references entities in file A, rebuilding A invalidates B's exits to A. Operator must currently rebuild both manually.
+
 ## 2026-05-06 (later still — spike 4 in progress)
 
 - **Spike 4 — `exits:` recursion + cross-reference resolution — load + validation pipeline shipped (steps 1–4).** The Validator now catches every cross-ref correctness issue at validate time; the Builder two-pass + DB tag-search fallback (step 5) is the only remaining work. 242 unit tests green (200 → 242, +42 across the four steps).
