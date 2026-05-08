@@ -80,6 +80,29 @@ The library is type-agnostic about what's registered — the field is named for 
 
 This restores the operator's ability to rebuild any single file in isolation without hand-tracking which other files reference it. Cross-file rebuild dependencies dissolve.
 
+## File-level `links:` block
+
+Each YAML file may declare a file-level `links:` list — directed assignments that set an attribute on one entity to a reference to another entity, after both have been built. The motivating case is bidirectional door pairs (each `ExitDoor` holding `other_side` pointing at its partner) but the primitive itself owns no game concepts: any consumer attribute whose value is another entity uses the same mechanism. See [links.md](links.md).
+
+The field lives at file level (sibling of `entities:` and `incoming_exits:` in the canonical YAML shape), extracted by the Loader into `LoadResult.file_metadata[file_path]["links"]`. Each entry uses the same `(deployment_file, deployment_id)` identity scheme as `location:` / `destination:` / `incoming_exits:`:
+
+```yaml
+links:
+  - entity:    { deployment_file: millholm/cellar.yaml, deployment_id: 5 }
+    attribute: other_side
+    points_to: { deployment_file: millholm/cellar.yaml, deployment_id: 6 }
+```
+
+**End-to-end behaviour:**
+
+- Validator's Tier 1 file-level shape check refuses malformed `links:` entries (each must have `entity`, `attribute`, `points_to` of correct shape, plus optional `category`).
+- Validator's Tier 4 cross-ref resolution (when run on whole-repo entities) verifies every link's `entity` and `points_to` point at entities that exist somewhere in the repo.
+- Builder's pass 4 (after passes 1+2 and pass 3) walks each link entry, resolves `entity` and `points_to` via the same `_resolve_cross_ref` helper used for `location:` / `destination:` (cache → DB tag-search), and calls `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. Unresolvable refs raise `BuilderError` — no partial state.
+
+`links:` is a generic primitive: each entry is one directed assignment. Reciprocal pairs (door pairs, married NPCs) become two entries; one-way refs (a teleporter target, an NPC's master) are a single entry. The library does not bake in any "pair" type or symmetry assumption.
+
+For paired cross-file links, authors declare the same link entries in both files (the cross-file convention — see [links.md](links.md)). This makes each file an independently rebuildable restoration unit without library-side inbound-link restoration machinery.
+
 ## Cross-references
 
 Cross-references between entities use the composite identity. **Both keys are always required** — no same-file inference. Uniform shape simplifies the validator's predicate and the Builder's lookup.
