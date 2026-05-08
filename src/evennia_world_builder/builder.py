@@ -60,6 +60,12 @@ class Builder:
         # the canonical file via self._reader and builds the target.
         created.extend(self._run_pass_3(file_paths, create_object))
 
+        # Pass 4 — links: walk `links:` for files in scope and assign
+        # each declared `entity.attribute = points_to`. Runs after pass 3
+        # so the cache is fully warmed (own builds + DB-resolved cross-refs
+        # + incoming_exits restorations). See DESIGN/links.md.
+        self._run_pass_4(file_paths)
+
         return created
 
     def _build_one(self, entity: LoadedEntity, create_object) -> object:
@@ -204,6 +210,76 @@ class Builder:
                 created.append(self._build_one(target_entity, create_object))
 
         return created
+
+    def _run_pass_4(self, file_paths_in_scope: set) -> None:
+        """Walk ``links:`` for every file in scope; assign each declared link.
+
+        For each file path with a ``links:`` list in file_metadata:
+        - For each link entry, resolve ``entity`` and ``points_to`` via
+          ``_resolve_cross_ref`` (cache → DB).
+        - Call ``entity_obj.attributes.add(attribute, points_to_obj,
+          category=category)`` — same write path as a per-entity
+          ``attributes:`` block.
+
+        The Validator has guaranteed shape by this point. Builder
+        re-resolves with the runtime ``_resolve_cross_ref`` so cross-file
+        targets DB-fall-through correctly. An unresolvable side raises
+        ``BuilderError`` and refuses the build (no partial state).
+
+        See DESIGN/links.md for the design rationale.
+        """
+        if not self.file_metadata:
+            return
+        for path in file_paths_in_scope:
+            meta = self.file_metadata.get(path)
+            if not isinstance(meta, dict):
+                continue
+            links = meta.get("links")
+            if not isinstance(links, list):
+                continue
+            for index, link in enumerate(links):
+                if not isinstance(link, dict):
+                    continue
+                self._apply_one_link(path, index, link)
+
+    def _apply_one_link(self, path: str, index: int, link: dict) -> None:
+        """Resolve and apply a single link entry.
+
+        Wraps every step in BuilderError so failures surface with the
+        link's source file, its index in the ``links:`` list, and the
+        offending field name when applicable.
+        """
+        try:
+            entity_obj = self._resolve_cross_ref(
+                link["entity"], path, f"links[{index}].entity",
+            )
+        except BuilderError:
+            raise
+        except Exception as e:
+            raise BuilderError(
+                f"failed to resolve links[{index}].entity for {path!r}: {e}"
+            ) from e
+
+        try:
+            points_to_obj = self._resolve_cross_ref(
+                link["points_to"], path, f"links[{index}].points_to",
+            )
+        except BuilderError:
+            raise
+        except Exception as e:
+            raise BuilderError(
+                f"failed to resolve links[{index}].points_to for {path!r}: {e}"
+            ) from e
+
+        attribute = link["attribute"]
+        category = link.get("category")
+        try:
+            entity_obj.attributes.add(attribute, points_to_obj, category=category)
+        except Exception as e:
+            raise BuilderError(
+                f"failed to apply links[{index}] in {path!r} "
+                f"(attribute={attribute!r}): {e}"
+            ) from e
 
     def _fetch_canonical_entity(
         self, deployment_file: str, deployment_id: int,

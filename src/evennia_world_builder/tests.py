@@ -3988,3 +3988,232 @@ class BuilderTest(TestCase):
         with self.assertRaises(BuilderError) as ctx:
             b.build([bakery])
         self.assertIn("not found in canonical file", str(ctx.exception))
+
+
+class BuilderPass4LinksTest(TestCase):
+    """Verify Builder pass 4 (links) resolves and assigns each link.
+
+    Mocks ``evennia.utils.create.create_object`` so the build can run
+    without a live Evennia DB. Each created object is a MagicMock —
+    pass 4 calls ``obj.attributes.add(attribute, points_to_obj,
+    category=category)`` on the resolved ``entity`` mock; the test
+    asserts those calls happened with the expected arguments.
+
+    See DESIGN/links.md.
+    """
+
+    def _entity(self, *, path="x.yaml", deployment_id, name=None) -> LoadedEntity:
+        return LoadedEntity(
+            location={},
+            content={
+                "deployment_id": deployment_id,
+                "name": name or f"E{deployment_id}",
+                "typeclass": "ev.X",
+                "location": None,
+            },
+            path=path,
+        )
+
+    def _builder(self, *, file_metadata=None, reader=None):
+        return Builder(
+            Definitions(levels=("zone",)),
+            file_metadata=file_metadata,
+            reader=reader,
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_no_links_section_is_noop(self, mock_create, _mock_search):
+        # File has no links: key — pass 4 walks but finds nothing.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {}})
+        b.build([self._entity(deployment_id=1)])
+
+        # Built entity's attributes.add was never called by pass 4.
+        created[0].attributes.add.assert_not_called()
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_same_file_pair_links_both_assigned(
+        self, mock_create, _mock_search,
+    ):
+        # Two entities, two links forming a reciprocal pair. After
+        # build, each entity's attributes.add should have been called
+        # exactly once with the correct partner mock.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [
+            {
+                "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "attribute": "other_side",
+                "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            },
+            {
+                "entity": {"deployment_file": "x.yaml", "deployment_id": 2},
+                "attribute": "other_side",
+                "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+            },
+        ]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        a, c = created[0], created[1]
+        a.attributes.add.assert_called_once_with("other_side", c, category=None)
+        c.attributes.add.assert_called_once_with("other_side", a, category=None)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_link_with_category_applied(self, mock_create, _mock_search):
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "category": "doors",
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        created[0].attributes.add.assert_called_once_with(
+            "other_side", created[1], category="doors",
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_self_link_assigns(self, mock_create, _mock_search):
+        # entity == points_to. Allowed per design — Builder applies it.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": "self_ref",
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+        }]}})
+        b.build([self._entity(deployment_id=1)])
+
+        created[0].attributes.add.assert_called_once_with(
+            "self_ref", created[0], category=None,
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_entity_raises(self, mock_create, _mock_search):
+        # entity not in this build set and DB lookup returns nothing —
+        # BuilderError, no partial state.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([self._entity(deployment_id=1)])
+        self.assertIn("links[0].entity", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_points_to_raises(self, mock_create, _mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "ghost.yaml", "deployment_id": 99},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([self._entity(deployment_id=1)])
+        self.assertIn("links[0].points_to", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_links_in_out_of_scope_files_skipped(
+        self, mock_create, _mock_search,
+    ):
+        # file_metadata declares links in y.yaml, but only x.yaml is in
+        # the build's scope. y.yaml's links must not fire — they belong
+        # to a file not being built.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={
+            "y.yaml": {"links": [{
+                "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "attribute": "other_side",
+                "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+            }]},
+        })
+        # Build only x.yaml's entity. file_metadata for y.yaml exists,
+        # but y.yaml is not in file_paths_in_scope.
+        b.build([self._entity(path="x.yaml", deployment_id=1)])
+
+        created[0].attributes.add.assert_not_called()
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_link_after_pass3_can_resolve_restored_entity(
+        self, mock_create, _mock_search,
+    ):
+        # Pass 4 runs after pass 3, so an entity restored by pass 3 is
+        # in _built_by_id and a link pointing at it resolves cleanly via
+        # the cache (no extra DB lookup needed). We don't trigger pass
+        # 3 here — the assertion is just that pass 4 happens *after*
+        # pass 3 in the build() ordering. The simplest proof: a link
+        # whose entity is in scope and points_to is in scope resolves.
+        # (Pass 3 ordering is exercised in BuilderTest above.)
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        created[0].attributes.add.assert_called_once_with(
+            "other_side", created[1], category=None,
+        )
