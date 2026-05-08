@@ -176,6 +176,13 @@ def _check_name_well_formed(entity: LoadedEntity) -> str | None:
 
 _CROSS_REF_KEYS = ("deployment_file", "deployment_id")
 
+# A link entry's full key set. `entity`, `attribute`, `points_to` are
+# required; `category` is optional. Anything else is rejected as an
+# unexpected key. See DESIGN/links.md for the spec.
+_LINK_REQUIRED_KEYS = ("entity", "attribute", "points_to")
+_LINK_OPTIONAL_KEYS = ("category",)
+_LINK_ALL_KEYS = _LINK_REQUIRED_KEYS + _LINK_OPTIONAL_KEYS
+
 
 def _check_cross_ref_dict_shape(value, entity_path: str, field_name: str) -> str | None:
     """Validate that a value is a strict ``{deployment_file, deployment_id}`` dict.
@@ -790,31 +797,108 @@ class Validator:
                     f"got {type(meta).__name__}"
                 )
                 continue
-            if "incoming_exits" not in meta:
-                continue
+            self._check_incoming_exits_shape(path, meta)
+            self._check_links_shape(path, meta)
 
-            value = meta["incoming_exits"]
-            if not isinstance(value, list):
+    def _check_incoming_exits_shape(self, path: str, meta: dict) -> None:
+        if "incoming_exits" not in meta:
+            return
+        value = meta["incoming_exits"]
+        if not isinstance(value, list):
+            self._record_finding(
+                f"{path}: 'incoming_exits' must be a list, "
+                f"got {type(value).__name__}"
+            )
+            return
+        for index, ref in enumerate(value):
+            prefix = f"{path}: incoming_exits[{index}]"
+            if not isinstance(ref, dict):
                 self._record_finding(
-                    f"{path}: 'incoming_exits' must be a list, "
-                    f"got {type(value).__name__}"
+                    f"{prefix}: must be a cross-ref dict "
+                    f"{{deployment_file, deployment_id}}, "
+                    f"got {type(ref).__name__}"
                 )
                 continue
+            finding = _check_cross_ref_dict_shape(
+                ref, path, f"incoming_exits[{index}]",
+            )
+            if finding is not None:
+                self._record_finding(finding)
 
-            for index, ref in enumerate(value):
-                prefix = f"{path}: incoming_exits[{index}]"
-                if not isinstance(ref, dict):
-                    self._record_finding(
-                        f"{prefix}: must be a cross-ref dict "
-                        f"{{deployment_file, deployment_id}}, "
-                        f"got {type(ref).__name__}"
-                    )
-                    continue
-                finding = _check_cross_ref_dict_shape(
-                    ref, path, f"incoming_exits[{index}]",
+    def _check_links_shape(self, path: str, meta: dict) -> None:
+        """File-level Tier 1 — shape-check ``links:`` per file.
+
+        Each entry must have ``entity``, ``attribute``, ``points_to``
+        (required) and may have ``category`` (optional). ``entity`` and
+        ``points_to`` are ``{deployment_file, deployment_id}`` cross-ref
+        dicts; ``attribute`` and ``category`` are non-empty strings.
+        Findings name the path and array index for easy author location.
+        See DESIGN/links.md.
+        """
+        if "links" not in meta:
+            return
+        value = meta["links"]
+        if not isinstance(value, list):
+            self._record_finding(
+                f"{path}: 'links' must be a list, "
+                f"got {type(value).__name__}"
+            )
+            return
+        for index, link in enumerate(value):
+            self._check_one_link_shape(path, index, link)
+
+    def _check_one_link_shape(self, path: str, index: int, link) -> None:
+        prefix = f"{path}: links[{index}]"
+        if not isinstance(link, dict):
+            self._record_finding(
+                f"{prefix}: must be a link dict "
+                f"{{entity, attribute, points_to[, category]}}, "
+                f"got {type(link).__name__}"
+            )
+            return
+
+        actual = set(link)
+        missing = set(_LINK_REQUIRED_KEYS) - actual
+        if missing:
+            self._record_finding(
+                f"{prefix}: missing required key(s): {sorted(missing)}"
+            )
+        extra = actual - set(_LINK_ALL_KEYS)
+        if extra:
+            self._record_finding(
+                f"{prefix}: has unexpected key(s): {sorted(extra)}"
+            )
+
+        for field in ("entity", "points_to"):
+            if field not in link:
+                continue  # already flagged via missing-required
+            ref = link[field]
+            if not isinstance(ref, dict):
+                self._record_finding(
+                    f"{prefix}: '{field}' must be a cross-ref dict "
+                    f"{{deployment_file, deployment_id}}, "
+                    f"got {type(ref).__name__}"
                 )
-                if finding is not None:
-                    self._record_finding(finding)
+                continue
+            finding = _check_cross_ref_dict_shape(
+                ref, path, f"links[{index}].{field}",
+            )
+            if finding is not None:
+                self._record_finding(finding)
+
+        if "attribute" in link:
+            attribute = link["attribute"]
+            if not isinstance(attribute, str) or not attribute.strip():
+                self._record_finding(
+                    f"{prefix}: 'attribute' must be a non-empty string"
+                )
+
+        if "category" in link:
+            category = link["category"]
+            if not isinstance(category, str) or not category.strip():
+                self._record_finding(
+                    f"{prefix}: 'category' must be a non-empty string when present"
+                )
 
     def _check_cross_refs(self, entities: list) -> None:
         """Tier 4: every cross-ref must resolve in the seen_ids index.

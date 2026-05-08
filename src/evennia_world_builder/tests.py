@@ -2205,6 +2205,197 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
         self.assertTrue(any("x.yaml: incoming_exits" in e for e in v.errors))
 
 
+class ValidatorLinksFieldShapeTest(TestCase):
+    """File-level Tier 1 — `links:` shape check via file_metadata.
+
+    `links:` is a file-level YAML key (lives alongside `entities:` in
+    the wrapper-mapping shape, sibling of `incoming_exits:`). Each
+    entry has required `entity`, `attribute`, `points_to` and optional
+    `category`. The Validator runs shape checks against the dict once
+    per file path (regardless of how many entities were declared).
+
+    See DESIGN/links.md for the spec.
+    """
+
+    def _entity(self) -> LoadedEntity:
+        return LoadedEntity(
+            location={},
+            content={
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "x",
+                "location": None,
+            },
+            path="a.yaml",
+        )
+
+    def _validator(self, file_metadata):
+        return Validator(
+            Definitions(levels=("zone",)), file_metadata=file_metadata,
+        )
+
+    def _well_formed_link(self):
+        return {
+            "entity": {"deployment_file": "a.yaml", "deployment_id": 1},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "a.yaml", "deployment_id": 2},
+        }
+
+    def test_absent_field_passes(self):
+        v = self._validator({})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_no_links_key_passes(self):
+        v = self._validator({"a.yaml": {"some_other_key": "value"}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_empty_list_passes(self):
+        v = self._validator({"a.yaml": {"links": []}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_well_formed_list_accepted(self):
+        v = self._validator({"a.yaml": {"links": [self._well_formed_link()]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_optional_category_accepted(self):
+        link = self._well_formed_link()
+        link["category"] = "doors"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_non_list_rejected(self):
+        v = self._validator({"a.yaml": {"links": "oops"}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "'links' must be a list" in e for e in v.errors
+        ))
+
+    def test_non_dict_entry_rejected(self):
+        v = self._validator({"a.yaml": {"links": ["oops"]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "must be a link dict" in e for e in v.errors
+        ))
+
+    def test_missing_entity_rejected(self):
+        link = self._well_formed_link()
+        del link["entity"]
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "missing required key" in e and "entity" in e
+            for e in v.errors
+        ))
+
+    def test_missing_attribute_rejected(self):
+        link = self._well_formed_link()
+        del link["attribute"]
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "missing required key" in e and "attribute" in e
+            for e in v.errors
+        ))
+
+    def test_missing_points_to_rejected(self):
+        link = self._well_formed_link()
+        del link["points_to"]
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "missing required key" in e and "points_to" in e
+            for e in v.errors
+        ))
+
+    def test_unexpected_key_rejected(self):
+        link = self._well_formed_link()
+        link["foo"] = "bar"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any("unexpected key" in e for e in v.errors))
+
+    def test_attribute_must_be_non_empty_string(self):
+        for bad in (123, "", "   ", None):
+            link = self._well_formed_link()
+            link["attribute"] = bad
+            v = self._validator({"a.yaml": {"links": [link]}})
+            with self.assertRaises(ValidatorError):
+                v.validate([self._entity()])
+            self.assertTrue(any(
+                "'attribute' must be a non-empty string" in e
+                for e in v.errors
+            ), f"missing finding for attribute={bad!r}")
+
+    def test_category_must_be_non_empty_string_if_present(self):
+        for bad in (123, "", "   "):
+            link = self._well_formed_link()
+            link["category"] = bad
+            v = self._validator({"a.yaml": {"links": [link]}})
+            with self.assertRaises(ValidatorError):
+                v.validate([self._entity()])
+            self.assertTrue(any(
+                "'category' must be a non-empty string when present" in e
+                for e in v.errors
+            ), f"missing finding for category={bad!r}")
+
+    def test_entity_non_dict_rejected(self):
+        link = self._well_formed_link()
+        link["entity"] = "oops"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "'entity' must be a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_points_to_non_dict_rejected(self):
+        link = self._well_formed_link()
+        link["points_to"] = "oops"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "'points_to' must be a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_entity_bad_cross_ref_shape_rejected(self):
+        link = self._well_formed_link()
+        link["entity"] = {"deployment_file": "a.yaml"}  # missing deployment_id
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0].entity" in e and "missing required key" in e
+            for e in v.errors
+        ))
+
+    def test_finding_names_path_and_index(self):
+        v = self._validator({"x.yaml": {"links": ["oops"]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([LoadedEntity(
+                location={},
+                content={
+                    "deployment_id": 1,
+                    "typeclass": "evennia.objects.objects.DefaultRoom",
+                    "name": "x",
+                    "location": None,
+                },
+                path="x.yaml",
+            )])
+        self.assertTrue(any("x.yaml: links[0]" in e for e in v.errors))
+
+
 class ValidatorNoAuthorLocationOnNestedTest(TestCase):
     """Tier 1 — refuse author-written `location:` on nested entities."""
 
