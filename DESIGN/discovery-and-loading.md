@@ -100,7 +100,11 @@ entities:
   - { ... entity 2 ... }
 incoming_exits:                       # ← file-level metadata key
   - { deployment_file: ..., deployment_id: ... }
+links:                                # ← file-level metadata key
+  - { entity: { ... }, attribute: ..., points_to: { ... } }
 ```
+
+Currently shipped file-level keys: `incoming_exits:` (cross-file dependency restoration — see [builder.md](builder.md)) and `links:` (cross-entity attribute references — see [links.md](links.md)). The Loader is open-ended: any future file-level key lands in `LoadResult.file_metadata[path]` verbatim without library code changes.
 
 Other top-level shapes (a bare list, a single-entity mapping without `entities:`, a non-mapping value) raise `LoaderInvalidShapeError`.
 

@@ -60,7 +60,7 @@ The validator's behaviour is set by two constructor flags:
 |---|---|---|
 | `evennia_runtime` | caller (`wb_build` → True; `wb-validate` → False) | Tier 3 predicates |
 | `resolve_cross_refs` | caller (whole-repo callers → True; tests/scope-only callers → False) | Tier 4 phase |
-| `file_metadata` | caller (orchestrators pass `LoadResult.file_metadata`; tests can construct narrowly-scoped dicts) | File-level Tier 1 shape check + Tier 4 walk over `incoming_exits:` |
+| `file_metadata` | caller (orchestrators pass `LoadResult.file_metadata`; tests can construct narrowly-scoped dicts) | File-level Tier 1 shape checks (`incoming_exits:`, `links:`) + Tier 4 walk over both for cross-ref resolution |
 
 No environment detection inside predicates. No try/except heuristics that conflate "wrong env" with "wrong path." The caller asserts what tier of check it can support; the validator runs the appropriate set.
 
@@ -108,7 +108,7 @@ Same Validator, two output channels.
 | 1 — Stateless | `_check_typeclass_well_formed` | field missing, not a string, or empty/whitespace |
 | 1 — Stateless | `_check_location_well_formed` | field missing; or value is neither `null` nor a strict `{deployment_file: non-empty str, deployment_id: non-negative int}` cross-ref dict (extra keys refused, `bool` excluded from int) |
 | 1 — Stateless | `_check_destination_well_formed` | `destination:` (optional) present but not a strict `{deployment_file, deployment_id}` cross-ref dict; same shape rules as `location:` but `null` is also rejected (an exit must point somewhere) |
-| 1 — File-level | `_check_file_metadata_shape` (method) | `file_metadata[path]["incoming_exits"]` (optional) not a list; or any list entry not a strict `{deployment_file, deployment_id}` cross-ref dict. Runs once per file path that declared the registry, not once per entity. Findings name the file path (the registry's home), not any specific entity. |
+| 1 — File-level | `_check_file_metadata_shape` (method, dispatches to `_check_incoming_exits_shape` and `_check_links_shape`) | `file_metadata[path]["incoming_exits"]` (optional) not a list; or any list entry not a strict `{deployment_file, deployment_id}` cross-ref dict. `file_metadata[path]["links"]` (optional) not a list; any entry not a `{entity, attribute, points_to[, category]}` dict; bad `entity` / `points_to` cross-ref shape; non-string or empty `attribute` / `category`; unexpected keys. Runs once per file path that declared the registry, not once per entity. Findings name the file path and array index (e.g. `path: links[2]`). See [links.md](links.md). |
 | 1 — Stateless | `_check_location_not_null_when_destination_present` | entity declares `destination:` but `location:` is null — an exit must live in a room |
 | 1 — Stateless | `_check_no_author_location_on_nested` | nested entity (`is_nested=True`) had a `location:` key in the original YAML — the Loader synthesises one and silently overwriting author intent would be a "fails loudly" violation |
 | 1 — Stateless | `_check_description_field_shape` | `description` (optional) present but not a string |
@@ -121,7 +121,7 @@ Same Validator, two output channels.
 | 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
 | 3 — Evennia-runtime | `_check_destination_required_for_exit_typeclass` | typeclass inherits from Evennia's `DefaultExit` but no `destination:` is set |
 | 3 — Evennia-runtime | `_check_destination_forbidden_for_non_exit_typeclass` | typeclass does NOT inherit from `DefaultExit` but `destination:` is set |
-| 4 — Cross-ref | `_check_cross_refs` (post-loop phase) | any `location:` or `destination:` cross-ref (per-entity) OR `incoming_exits[N]` cross-ref (file-level, walked from `self.file_metadata`) `(deployment_file, deployment_id)` not present in the `seen_ids` index built during the per-entity pass |
+| 4 — Cross-ref | `_check_cross_refs` (post-loop phase) | any `location:` or `destination:` cross-ref (per-entity), `incoming_exits[N]` cross-ref (file-level), or `links[N].entity` / `links[N].points_to` cross-ref (file-level) `(deployment_file, deployment_id)` not present in the `seen_ids` index built during the per-entity pass. All three categories share the same `_check_one_cross_ref` helper. |
 
 All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader now synthesises `content["location"]` as a cross-ref dict on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
 

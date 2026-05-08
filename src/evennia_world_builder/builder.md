@@ -73,7 +73,7 @@ def __init__(
 
 `definitions` is stored for future use (level vocabulary may inform placement decisions like building exits at zone boundaries); current logic doesn't consult it.
 
-`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys like `incoming_exits:` extracted by the Loader. Pass 3 walks the `incoming_exits:` lists for each file in the build set.
+`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys extracted by the Loader. Currently consumed: `incoming_exits:` (walked by pass 3 for cross-file dependency restore) and `links:` (walked by pass 4 for cross-entity attribute references; see [DESIGN/links.md](../../DESIGN/links.md)).
 
 `reader` is the configured Reader, used by pass 3 to fetch canonical files when an `incoming_exits:` target is missing from both `_built_by_id` and the DB. Optional — Builder constructed without a reader can still build entities; pass 3 raises `BuilderError` only if it actually needs to fetch a missing dep.
 
@@ -95,7 +95,8 @@ The single public method. Returns the list of created Evennia objects on success
 4. **Pass 1+2 partition:** split the entity list into `non_exits` (entities without a `destination:` field) and `exits` (entities with one). Iterate `non_exits + exits` so every non-exit is built before any exit — this guarantees an exit's destination cross-ref always resolves to a non-exit room that's already in `_built_by_id`. Within each pass, entity order is preserved (depth-first pre-order from the Loader for nested entities; YAML order for top-level entities).
 5. For each entity in the partitioned order, call `_build_one(entity, create_object)` (see helper below for the per-entity steps).
 6. **Pass 3 (dependency restore):** call `_run_pass_3(file_paths_in_scope, create_object)`. Walks `file_metadata[path]["incoming_exits"]` for each file in scope; for each registered ref that's missing from both `_built_by_id` and the DB tag-search, fetches the canonical file via the Reader and builds the missing entity through the same `_build_one` helper.
-7. Return the combined list of created objects (passes 1+2 + any pass-3 restorations).
+7. **Pass 4 (links):** call `_run_pass_4(file_paths_in_scope)`. Walks `file_metadata[path]["links"]` for each file in scope; for each entry, resolves `entity` and `points_to` via `_resolve_cross_ref` (cache → DB) and calls `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. Pass 4 sees the fully warmed `_built_by_id` (own builds + DB-resolved cross-refs + pass-3 restorations) so most resolutions are cache hits. See [DESIGN/links.md](../../DESIGN/links.md).
+8. Return the combined list of created objects (passes 1+2 + any pass-3 restorations). Pass 4 mutates already-built objects and does not return new ones.
 
 #### Two-pass dispatch
 
@@ -322,3 +323,18 @@ Tests use `unittest.mock.patch` against `evennia.utils.create.create_object` and
 | `BuilderTest.test_cross_ref_falls_through_to_db_on_in_build_miss` | In-build miss → DB fallback hit → `create_object(location=db_obj)` | [tests.py:2868](tests.py#L2868) |
 | `BuilderTest.test_db_fallback_caches_back_into_built_by_id` | Two refs to same DB-only target → one DB query (cache-back) | [tests.py:2894](tests.py#L2894) |
 | `BuilderTest.test_unresolved_when_db_misses_too` | In-build miss + DB miss → `BuilderError` with "neither built nor present in the DB" wording | [tests.py:2926](tests.py#L2926) |
+
+### Pass 4 — links assignment
+
+`_run_pass_4(file_paths_in_scope)` walks each in-scope file's `links:` and applies each entry via `_apply_one_link`, which resolves both `entity` and `points_to` through the same `_resolve_cross_ref` helper passes 1/2 use, then calls `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. See [DESIGN/links.md](../../DESIGN/links.md) for the design rationale.
+
+| Test | Covers | Location |
+|---|---|---|
+| `BuilderPass4LinksTest.test_no_links_section_is_noop` | File without a `links:` key — pass 4 walks but does nothing | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_same_file_pair_links_both_assigned` | Two-link reciprocal pair both fire; each entity's `attributes.add` called once with the partner mock | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_link_with_category_applied` | Optional `category:` propagates through to `attributes.add(category=...)` | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_self_link_assigns` | `entity == points_to` accepted; assignment fires with the same object on both sides | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_unresolved_entity_raises` | Unresolved `entity` raises `BuilderError` naming `links[i].entity` | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_unresolved_points_to_raises` | Unresolved `points_to` raises `BuilderError` naming `links[i].points_to` | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_links_in_out_of_scope_files_skipped` | Links declared in a file not in build scope do not fire | [tests.py](tests.py) |
+| `BuilderPass4LinksTest.test_link_after_pass3_can_resolve_restored_entity` | Pass 4 runs after pass 3 — link to entity in scope resolves via cache | [tests.py](tests.py) |

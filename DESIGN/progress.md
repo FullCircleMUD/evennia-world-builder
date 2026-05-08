@@ -2,7 +2,23 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
-## 2026-05-07 (latest)
+## 2026-05-08 (latest)
+
+- **`links:` — generic file-level cross-entity attribute references — shipped.** New file-level YAML key for setting attributes whose values are references to other built entities (e.g. ExitDoor's `other_side`, teleporter's target, NPC's master). The library doesn't bake in any consumer game concepts; each link is a single directed assignment, reciprocal pairs are two entries. 327 unit tests green (293 → 327, +34 across five steps). Design doc: [links.md](links.md).
+
+  - **Step 1 — Loader contract for `links:`.** No code change needed: the Loader's existing file-level metadata extraction handles arbitrary keys. Test added asserting `links:` lands in `LoadResult.file_metadata[path]["links"]` verbatim, locking the contract.
+
+  - **Step 2 — Validator Tier 1 shape check.** New `_check_links_shape` predicate. Each entry must have `entity`, `attribute`, `points_to` (required) and an optional `category`. Cross-ref dicts go through the shared `_check_cross_ref_dict_shape` helper. `_check_file_metadata_shape` refactored to dispatch to per-key handlers (incoming_exits and links are now siblings, neither short-circuiting the other). 17 new tests.
+
+  - **Step 3 — Validator Tier 4 cross-ref resolution.** `_check_cross_refs` extended to walk each well-shaped link's `entity` and `points_to` against `seen_ids` via the same `_check_one_cross_ref` helper that location/destination/incoming_exits use. 8 new tests covering both-sides-resolve, cross-file resolve, unresolved each side, partial resolution reporting, gating, malformed-skip-no-double-report, and self-reference accepted.
+
+  - **Step 4 — Builder pass 4.** New `_run_pass_4(file_paths_in_scope)` invoked from `build()` after `_run_pass_3`. Walks `file_metadata[path]["links"]` for files in scope; for each entry resolves `entity` and `points_to` via the existing `_resolve_cross_ref` (cache → DB) and calls `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. By the end of pass 3, `_built_by_id` is fully warm — pass 4 mostly hits the cache. 8 new tests.
+
+  - **Step 5 — Demo content.** `examples/demo_game/` gains a minimal `DemoDoor` typeclass (~70 lines: `is_open` + `other_side` AttributeProperties, `at_traverse` blocking when closed, `at_open`/`at_close` mirroring to partner via `other_side`) plus `open`/`close` commands. The companion `evennia-world-builder-test-yaml` repo's `links` branch converts the bakery↔inn exit pair to DemoDoors and adds a `links:` block to both files declaring both directional links (per the cross-file "declare in both files" convention). `wb-validate` on the test repo loads 13 entities cleanly with all 4 link entries resolving in Tier 4.
+
+  Cross-file staleness is documented as a known limitation — the convention "declare paired cross-file links in both files" makes each file an independently rebuildable restoration unit, no library-side `inbound_links:` mechanism shipped. Per the principle "library does not own game concepts," there's no built-in pair sugar; reciprocal pairs are two granular entries.
+
+## 2026-05-07
 
 - **`wb_build` defers the entire pipeline to a Twisted worker thread.** Long deployments no longer block the Evennia reactor — players continue interacting with the game while a build runs. Implementation: `evennia.utils.utils.run_async` wraps the whole pipeline (Reader → Definitions → Finder → Loader → Validator → Builder), returning a list of operator-facing messages. Args parsing stays on the reactor thread for immediate feedback on malformed input; the success/failure callbacks flush the message list back via `caller.msg()` on the reactor thread when the build completes. `_run_validator` refactored to take a messages-list sink instead of a caller. Live verified: during a `wb_build all` run, `look` and `say` commands respond instantly, and the build output arrives in one batch when the worker finishes. The standalone `wb-validate` CLI is unchanged — it's a one-shot subprocess, not running inside a reactor.
 
