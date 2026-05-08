@@ -754,6 +754,33 @@ class LoaderTest(TestCase):
             [{"deployment_file": "b.yaml", "deployment_id": 1}],
         )
 
+    def test_file_metadata_extracts_links(self):
+        # `links:` lives alongside `entities:` and `incoming_exits:` as a
+        # file-level key. Loader extracts it into file_metadata verbatim
+        # — shape validation and resolution happen downstream.
+        # See DESIGN/links.md.
+        result = self._load_yaml_result({
+            "entities": [{"deployment_id": 1, "name": "A"}],
+            "links": [
+                {
+                    "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                    "attribute": "other_side",
+                    "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+                },
+            ],
+        })
+        self.assertEqual(result.file_metadata, {
+            "x.yaml": {
+                "links": [
+                    {
+                        "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                        "attribute": "other_side",
+                        "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+                    },
+                ],
+            },
+        })
+
     def test_file_metadata_preserves_unknown_keys(self):
         # Library doesn't curate file-level keys — consumers do. An
         # unrecognised key sits in file_metadata; the Loader doesn't
