@@ -3175,6 +3175,125 @@ class ValidatorCrossRefResolutionTest(TestCase):
         self.assertEqual(len(unresolved), 1)
         self.assertTrue(unresolved[0].startswith("bakery.yaml: "))
 
+    # --- file-level: links: -----------------------------------------------
+    #
+    # Tier 4 walks each well-shaped link entry and resolves both `entity`
+    # and `points_to` against seen_ids. See DESIGN/links.md.
+
+    def _link(self, entity_file, entity_id, points_to_file, points_to_id):
+        return {
+            "entity": {"deployment_file": entity_file, "deployment_id": entity_id},
+            "attribute": "other_side",
+            "points_to": {
+                "deployment_file": points_to_file, "deployment_id": points_to_id,
+            },
+        }
+
+    def test_links_both_sides_resolve(self):
+        # Both halves of a same-file door pair land in seen_ids.
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("a.yaml", 1, "a.yaml", 2),
+            self._link("a.yaml", 2, "a.yaml", 1),
+        ]}})
+        v.validate([
+            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", deployment_id=2, location=None),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_links_cross_file_resolve(self):
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("a.yaml", 1, "b.yaml", 1),
+        ]}})
+        v.validate([
+            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(path="b.yaml", deployment_id=1, location=None),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_links_unresolved_entity_reported(self):
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("ghost.yaml", 99, "a.yaml", 1),
+        ]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="a.yaml", deployment_id=1, location=None,
+            )])
+        self.assertTrue(any(
+            "'links[0].entity' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_links_unresolved_points_to_reported(self):
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("a.yaml", 1, "ghost.yaml", 99),
+        ]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="a.yaml", deployment_id=1, location=None,
+            )])
+        self.assertTrue(any(
+            "'links[0].points_to' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_links_partial_resolution_reports_only_misses(self):
+        # link[0] resolves both sides; link[1].points_to dangles.
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("a.yaml", 1, "a.yaml", 2),
+            self._link("a.yaml", 1, "ghost.yaml", 99),
+        ]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._entity(path="a.yaml", deployment_id=1, location=None),
+                self._entity(path="a.yaml", deployment_id=2, location=None),
+            ])
+        unresolved = [e for e in v.errors if "does not resolve" in e]
+        self.assertEqual(len(unresolved), 1)
+        self.assertIn("links[1].points_to", unresolved[0])
+
+    def test_links_skipped_when_resolve_cross_refs_false(self):
+        v = self._validator(
+            resolve_cross_refs=False,
+            file_metadata={"a.yaml": {"links": [
+                self._link("a.yaml", 1, "ghost.yaml", 99),
+            ]}},
+        )
+        v.validate([self._entity(
+            path="a.yaml", deployment_id=1, location=None,
+        )])
+        self.assertFalse(any("does not resolve" in e for e in v.errors))
+
+    def test_links_malformed_skipped_no_double_report(self):
+        # Tier 1 catches a non-dict entry; Tier 4 must stay quiet so the
+        # operator gets one finding, not two.
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            "not a dict",
+        ]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="a.yaml", deployment_id=1, location=None,
+            )])
+        # Tier 1 finding present:
+        self.assertTrue(any(
+            "links[0]" in e and "must be a link dict" in e for e in v.errors
+        ))
+        # Tier 4 stays quiet:
+        self.assertFalse(any(
+            "does not resolve" in e for e in v.errors
+        ))
+
+    def test_links_self_reference_resolves(self):
+        # entity == points_to is allowed per design — Tier 4 just checks
+        # both refs land in seen_ids; identity is fine.
+        v = self._validator(file_metadata={"a.yaml": {"links": [
+            self._link("a.yaml", 1, "a.yaml", 1),
+        ]}})
+        v.validate([self._entity(
+            path="a.yaml", deployment_id=1, location=None,
+        )])
+        self.assertEqual(v.errors, [])
+
 
 class BuilderTest(TestCase):
     """Verify Builder.build's location resolution + in-build map behaviour.

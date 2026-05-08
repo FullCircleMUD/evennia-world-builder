@@ -940,12 +940,26 @@ class Validator:
             if not isinstance(meta, dict):
                 continue
             incoming = meta.get("incoming_exits")
-            if not isinstance(incoming, list):
-                continue
-            for index, ref in enumerate(incoming):
-                self._check_one_cross_ref(
-                    path, ref, f"incoming_exits[{index}]",
-                )
+            if isinstance(incoming, list):
+                for index, ref in enumerate(incoming):
+                    self._check_one_cross_ref(
+                        path, ref, f"incoming_exits[{index}]",
+                    )
+
+            # File-level links — both `entity` and `points_to` are
+            # cross-refs that must resolve. Tier 1 has already filtered
+            # out anything malformed; here we just check that whatever
+            # well-shaped refs remain land in seen_ids. See DESIGN/links.md.
+            links = meta.get("links")
+            if isinstance(links, list):
+                for index, link in enumerate(links):
+                    if not isinstance(link, dict):
+                        continue
+                    for field in ("entity", "points_to"):
+                        self._check_one_cross_ref(
+                            path, link.get(field),
+                            f"links[{index}].{field}",
+                        )
 
     def _check_one_cross_ref(self, source_path: str, ref, field_name: str) -> None:
         """Verify a single cross-ref dict resolves in self.seen_ids.
