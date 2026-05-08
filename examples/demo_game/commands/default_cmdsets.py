@@ -16,6 +16,7 @@ own cmdsets by inheriting from them or directly from `evennia.CmdSet`.
 
 from evennia import default_cmds
 
+from commands.door_commands import CmdClose, CmdOpen
 from commands.worldbuilder import CmdWBFlatten, CmdWBLoad
 
 
@@ -38,6 +39,8 @@ class CharacterCmdSet(default_cmds.CharacterCmdSet):
         #
         self.add(CmdWBLoad())
         self.add(CmdWBFlatten())
+        self.add(CmdOpen())
+        self.add(CmdClose())
 
 
 class AccountCmdSet(default_cmds.AccountCmdSet):
