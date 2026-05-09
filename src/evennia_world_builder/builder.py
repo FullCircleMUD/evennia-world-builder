@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Documentation: see builder.md (co-located).
+import ast
+
 from .definitions import Definitions
 from .errors import BuilderError
 from .loader import LoadedEntity
@@ -299,12 +301,107 @@ class Builder:
         attribute = link["attribute"]
         category = link.get("category")
         try:
-            entity_obj.attributes.add(attribute, points_to_obj, category=category)
+            if "[" in attribute:
+                if category is not None:
+                    raise BuilderError(
+                        f"links[{index}] in {path!r}: subscript-path attribute "
+                        f"{attribute!r} cannot be used with 'category' (category "
+                        f"only applies to bare attribute names)"
+                    )
+                self._assign_via_subscript_path(
+                    entity_obj, attribute, points_to_obj,
+                )
+            else:
+                entity_obj.attributes.add(
+                    attribute, points_to_obj, category=category,
+                )
+        except BuilderError:
+            raise
         except Exception as e:
             raise BuilderError(
                 f"failed to apply links[{index}] in {path!r} "
                 f"(attribute={attribute!r}): {e}"
             ) from e
+
+    def _assign_via_subscript_path(self, entity_obj, attribute_path: str, target):
+        """Walk a subscript path on an existing attribute and assign target.
+
+        Supports paths like ``foo["bar"]["baz"]`` or ``foo[0]["baz"]`` —
+        the leading bare identifier names a top-level attribute that
+        must already exist on entity_obj (typically created by an
+        ``attributes:`` block in pass 1 with placeholder values like
+        ``null``); each subsequent subscript walks into the nested
+        dict/list structure; the final subscript receives the target.
+
+        After mutation the top-level attribute is re-assigned so the
+        change is persisted (Evennia's attribute store returns plain
+        dicts/lists that don't auto-persist nested mutations).
+        """
+        try:
+            tree = ast.parse(attribute_path, mode="eval").body
+        except SyntaxError as e:
+            raise BuilderError(
+                f"attribute path {attribute_path!r} is not valid Python "
+                f"subscript syntax: {e.msg}"
+            ) from e
+
+        subscripts = []
+        while isinstance(tree, ast.Subscript):
+            try:
+                subscripts.append(ast.literal_eval(tree.slice))
+            except (ValueError, SyntaxError) as e:
+                raise BuilderError(
+                    f"attribute path {attribute_path!r} contains a non-literal "
+                    f"subscript: {e}"
+                ) from e
+            tree = tree.value
+
+        if not isinstance(tree, ast.Name):
+            raise BuilderError(
+                f"attribute path {attribute_path!r} must start with a bare "
+                f"attribute name, got {ast.dump(tree)}"
+            )
+
+        name = tree.id
+        subscripts.reverse()
+
+        if not subscripts:
+            # No subscripts — fall through to the bare-attribute path. Should
+            # not happen because the caller dispatches on `[` presence, but be
+            # defensive.
+            entity_obj.attributes.add(name, target)
+            return
+
+        top = entity_obj.attributes.get(name)
+        if top is None:
+            raise BuilderError(
+                f"attribute path {attribute_path!r}: top-level attribute "
+                f"{name!r} does not exist on entity (declare it in an "
+                f"attributes: block with placeholder values before this link runs)"
+            )
+
+        obj = top
+        for key in subscripts[:-1]:
+            try:
+                obj = obj[key]
+            except (KeyError, IndexError, TypeError) as e:
+                raise BuilderError(
+                    f"attribute path {attribute_path!r}: cannot navigate "
+                    f"to {key!r}: {type(e).__name__}: {e}"
+                ) from e
+
+        try:
+            obj[subscripts[-1]] = target
+        except (KeyError, IndexError, TypeError) as e:
+            raise BuilderError(
+                f"attribute path {attribute_path!r}: cannot assign at "
+                f"{subscripts[-1]!r}: {type(e).__name__}: {e}"
+            ) from e
+
+        # Re-save the mutated top-level value so Evennia persists the change.
+        # (attributes.get returns plain Python objects, not _SaverDict, so
+        # nested mutations don't auto-persist.)
+        entity_obj.attributes.add(name, top)
 
     def _fetch_canonical_entity(
         self, deployment_file: str, deployment_id: int,

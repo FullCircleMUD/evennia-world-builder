@@ -4510,3 +4510,258 @@ class BuilderPass4LinksTest(TestCase):
         created[0].attributes.add.assert_called_once_with(
             "other_side", created[1], category=None,
         )
+
+
+class BuilderPass4LinksSubscriptPathTest(TestCase):
+    """Verify Builder pass 4 supports subscript-path attribute syntax.
+
+    When the link's ``attribute`` field contains ``[`` the builder
+    treats it as a Python subscript expression like
+    ``destinations["ironback_peaks"]["destination"]`` — the leading
+    bare identifier names a top-level attribute that already exists
+    on the entity (typically created by an ``attributes:`` block in
+    pass 1 with placeholder ``null`` values), and the subscripts walk
+    into the nested dict/list structure to assign the resolved
+    cross-ref at the leaf.
+    """
+
+    def _entity(self, *, path="x.yaml", deployment_id, name=None) -> LoadedEntity:
+        return LoadedEntity(
+            location={},
+            content={
+                "deployment_id": deployment_id,
+                "name": name or f"E{deployment_id}",
+                "typeclass": "ev.X",
+                "location": None,
+            },
+            path=path,
+        )
+
+    def _builder(self, *, file_metadata=None, reader=None):
+        return Builder(
+            Definitions(levels=("zone",)),
+            file_metadata=file_metadata,
+            reader=reader,
+        )
+
+    def _make_create_with_attribute_store(self, attribute_stores):
+        """Build a create_object side-effect that wires .attributes.get to
+        return the per-entity dict from attribute_stores (keyed by
+        deployment_id), and .attributes.add to update that dict.
+
+        attribute_stores: list of dicts, one per to-be-created entity,
+        in creation order. Each dict represents the entity's persistent
+        attribute store — keys are attribute names, values are the
+        stored values.
+        """
+        created = []
+
+        def make(**kw):
+            # Determine which created index this is (0-based)
+            idx = len(created)
+            store = (
+                attribute_stores[idx]
+                if idx < len(attribute_stores) else {}
+            )
+            obj = MagicMock(_kw=kw, _store=store)
+
+            def get_attr(name, default=None):
+                return store.get(name, default)
+            obj.attributes.get.side_effect = get_attr
+
+            def set_attr(name, value, category=None):
+                store[name] = value
+            obj.attributes.add.side_effect = set_attr
+
+            created.append(obj)
+            return obj
+        return make, created
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_assigns_into_nested_dict(
+        self, mock_create, _mock_search,
+    ):
+        # Entity 1 has a `destinations` dict attribute with a placeholder
+        # at destinations["ironback_peaks"]["destination"]. The link
+        # walks that path and replaces the placeholder with entity 2.
+        store_1 = {
+            "destinations": {
+                "ironback_peaks": {
+                    "label": "Ironback Peaks",
+                    "destination": None,  # placeholder
+                    "food_cost": 3,
+                },
+            },
+        }
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["ironback_peaks"]["destination"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        # Placeholder was replaced with entity 2's mock object.
+        self.assertIs(
+            store_1["destinations"]["ironback_peaks"]["destination"],
+            created[1],
+        )
+        # Sibling literal data was preserved.
+        self.assertEqual(
+            store_1["destinations"]["ironback_peaks"]["label"],
+            "Ironback Peaks",
+        )
+        self.assertEqual(
+            store_1["destinations"]["ironback_peaks"]["food_cost"], 3,
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_bare_attribute_still_works(
+        self, mock_create, _mock_search,
+    ):
+        # Existing bare-attribute behaviour must be preserved when the
+        # attribute string contains no `[`.
+        make, created = self._make_create_with_attribute_store([{}, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": "other_side",
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        # Bare attribute set via single attributes.add call.
+        created[0].attributes.add.assert_any_call(
+            "other_side", created[1], category=None,
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_with_category_refused(
+        self, mock_create, _mock_search,
+    ):
+        # category only applies to bare attribute names — combining it
+        # with a subscript path is a refusal at build time.
+        make, created = self._make_create_with_attribute_store([{}, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'foo["bar"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "category": "doors",
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("category", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_missing_top_level_attribute_refused(
+        self, mock_create, _mock_search,
+    ):
+        # The top-level attribute named by the path's leading identifier
+        # must already exist (typically created in pass 1 by an
+        # attributes: block with placeholder values).
+        make, created = self._make_create_with_attribute_store([{}, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["foo"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("does not exist", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_bad_navigation_refused(
+        self, mock_create, _mock_search,
+    ):
+        # The path navigates into a key that doesn't exist mid-walk —
+        # the whole build fails with a clear error.
+        store_1 = {"destinations": {}}  # empty dict, no "foo" key
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["foo"]["bar"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("cannot navigate", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_malformed_syntax_refused(
+        self, mock_create, _mock_search,
+    ):
+        # `foo[unclosed` is invalid Python subscript syntax.
+        make, created = self._make_create_with_attribute_store([{}, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["unclosed',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("not valid Python", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_with_int_index_into_list(
+        self, mock_create, _mock_search,
+    ):
+        # Subscript paths support integer indices for list-shaped
+        # placeholders too — the parser distinguishes int from str.
+        store_1 = {
+            "routes": [
+                {"label": "north", "to": None},  # placeholder
+                {"label": "south", "to": "literal"},
+            ],
+        }
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'routes[0]["to"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        self.assertIs(store_1["routes"][0]["to"], created[1])
+        # Sibling list entry untouched.
+        self.assertEqual(store_1["routes"][1]["to"], "literal")
