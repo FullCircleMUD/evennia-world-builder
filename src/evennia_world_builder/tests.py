@@ -2518,6 +2518,274 @@ class ValidatorLinksFieldShapeTest(TestCase):
             )])
         self.assertTrue(any("x.yaml: links[0]" in e for e in v.errors))
 
+    # ── Subscript-path attribute syntax checks ──
+    # See DESIGN/links.md § Subscript-path attribute syntax.
+
+    def test_subscript_path_string_keys_accepted(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'destinations["foo"]["bar"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_int_index_accepted(self):
+        # Integer indices distinguished from string subscripts — the
+        # parser reads them as ints, so list-shaped placeholders are
+        # navigable.
+        link = self._well_formed_link()
+        link["attribute"] = 'routes[0]["to"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_mixed_subscripts_accepted(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'foo["bar"][0]["baz"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_unclosed_bracket_rejected(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'foo["unclosed'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "not valid Python subscript syntax" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_close_bracket_only_rejected(self):
+        # Defensive: an attribute string with `]` but no `[` (e.g.
+        # 'dict(thing]') still triggers the subscript-path validator
+        # so the malformed input fails loudly at validate time
+        # instead of being silently set as a garbage attribute name.
+        link = self._well_formed_link()
+        link["attribute"] = 'dict(thing]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "not valid Python subscript syntax" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_dot_attribute_rejected(self):
+        # Mid-path attribute access is not allowed — only the leading
+        # bare identifier is an attribute, everything after must be
+        # subscripts.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo.bar'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        # No `[` so no subscript-path validation runs — bare-name path
+        # accepts anything as a string. Not a path-syntax error.
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_dot_attribute_with_subscript_rejected(self):
+        # foo.bar["baz"] — has [ so subscript-path validation runs;
+        # leading expression is Attribute, not Name → refused.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo.bar["baz"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e
+            and "must start with a bare attribute name" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_non_literal_subscript_rejected(self):
+        # foo[bar] — the subscript is a Name (variable reference), not
+        # a literal. Path syntax only allows string keys and ints.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[bar]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "non-literal subscript" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_call_at_head_rejected(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'foo()["bar"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e
+            and "must start with a bare attribute name" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_with_category_rejected(self):
+        # category: only applies to bare attribute names — combining it
+        # with subscript-path syntax is structurally meaningless.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo["bar"]'
+        link["category"] = "doors"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e
+            and "'category' cannot be used with subscript-path attribute" in e
+            for e in v.errors
+        ))
+
+    def test_bare_attribute_with_category_still_accepted(self):
+        # Regression: bare-name attribute + category remains valid — the
+        # new check only fires on path-syntax attributes.
+        link = self._well_formed_link()
+        link["category"] = "doors"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    # ── Unbalanced-bracket cases (Python's parser is the bracket
+    # counter; ast.parse raises SyntaxError on any imbalance, our
+    # check catches it). ──
+
+    def test_subscript_path_extra_close_bracket_rejected(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'foo["bar"]]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "not valid Python subscript syntax" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_extra_open_bracket_rejected(self):
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[["bar"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "not valid Python subscript syntax" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_empty_subscript_rejected(self):
+        # `foo[]` — empty subscript isn't valid Python.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "not valid Python subscript syntax" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_deep_balanced_accepted(self):
+        # Six levels deep — the parser handles arbitrary depth, no
+        # special-cased depth limit.
+        link = self._well_formed_link()
+        link["attribute"] = 'a["b"]["c"]["d"]["e"]["f"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    # ── Non-literal subscript cases (the slice must be a literal value
+    # readable by ast.literal_eval — anything dynamic is refused). ──
+
+    def test_subscript_path_slice_subscript_rejected(self):
+        # `foo[1:2]` is a slice, not a literal index — refused.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[1:2]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "non-literal subscript" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_expression_subscript_rejected(self):
+        # `foo["a" + "b"]` is a BinOp expression — literal_eval refuses.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo["a" + "b"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e and "non-literal subscript" in e
+            for e in v.errors
+        ))
+
+    # ── Wrong shape at the head (must be a bare Name, not a list
+    # literal, dict literal, call, etc.). ──
+
+    def test_subscript_path_list_literal_at_head_rejected(self):
+        # `[1, 2]["bar"]` — leading expression is a List, not a Name.
+        link = self._well_formed_link()
+        link["attribute"] = '[1, 2]["bar"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e
+            and "must start with a bare attribute name" in e
+            for e in v.errors
+        ))
+
+    def test_subscript_path_dict_literal_at_head_rejected(self):
+        link = self._well_formed_link()
+        link["attribute"] = '{}[\'bar\']'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any(
+            "links[0]" in e
+            and "must start with a bare attribute name" in e
+            for e in v.errors
+        ))
+
+    # ── Stylistic variants that should be accepted (whitespace, quote
+    # styles inside the subscript). ──
+
+    def test_subscript_path_with_whitespace_accepted(self):
+        # ast.parse is whitespace-tolerant — extra spaces don't break it.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[ "bar" ][ 0 ]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_with_single_quotes_inside_accepted(self):
+        # YAML lets us double-quote the outer string and use single
+        # quotes for the keys, e.g. attribute: "foo['bar']".
+        # The parser doesn't care which quote style is used inside.
+        link = self._well_formed_link()
+        link["attribute"] = "foo['bar']['baz']"
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_negative_int_index_accepted(self):
+        # Negative indices are valid literals (literal_eval handles
+        # them). Useful for "last element" idioms in list-shaped attrs.
+        link = self._well_formed_link()
+        link["attribute"] = 'routes[-1]["to"]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
+    def test_subscript_path_empty_string_key_accepted(self):
+        # Empty string is a valid (if strange) dict key.
+        link = self._well_formed_link()
+        link["attribute"] = 'foo[""]'
+        v = self._validator({"a.yaml": {"links": [link]}})
+        v.validate([self._entity()])
+        self.assertEqual(v.errors, [])
+
 
 class ValidatorNoAuthorLocationOnNestedTest(TestCase):
     """Tier 1 — refuse author-written `location:` on nested entities."""
@@ -4738,6 +5006,31 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
+    def test_subscript_path_close_bracket_only_refused(
+        self, mock_create, _mock_search,
+    ):
+        # Defence-in-depth: an attribute string with `]` but no `[`
+        # still routes through the subscript-path branch so it fails
+        # loudly via the parser, not silently as a garbage attribute
+        # name. (Validator catches this earlier; builder enforces it
+        # too in case a caller bypasses validation.)
+        make, created = self._make_create_with_attribute_store([{}, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'dict(thing]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("not valid Python", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
     def test_subscript_path_with_int_index_into_list(
         self, mock_create, _mock_search,
     ):
@@ -4765,3 +5058,129 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         self.assertIs(store_1["routes"][0]["to"], created[1])
         # Sibling list entry untouched.
         self.assertEqual(store_1["routes"][1]["to"], "literal")
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_assignment_into_none_leaf_refused(
+        self, mock_create, _mock_search,
+    ):
+        # Leaf-assignment failure: walk reaches a None at the parent of
+        # the final subscript and trying to assign there raises
+        # TypeError → BuilderError with "cannot assign at" wording.
+        # Path is two-deep: walk reaches obj["foo"] = None, then the
+        # final assignment None["bar"] = target fails.
+        store_1 = {"destinations": {"foo": None}}
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["foo"]["bar"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("cannot assign at", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_navigation_through_none_mid_walk_refused(
+        self, mock_create, _mock_search,
+    ):
+        # Mid-walk failure (distinct from leaf-assignment): path is
+        # three-deep, walk pulls `obj["foo"] = None`, then iterates
+        # again to `None["bar"]` which raises TypeError → BuilderError
+        # with "cannot navigate" wording.
+        store_1 = {"destinations": {"foo": None}}
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["foo"]["bar"]["baz"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("cannot navigate", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_list_index_out_of_range_refused(
+        self, mock_create, _mock_search,
+    ):
+        # `routes[5]["to"]` on a 2-element list — IndexError surfaces
+        # as BuilderError with "cannot navigate" wording.
+        store_1 = {"routes": [{"to": None}, {"to": None}]}
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'routes[5]["to"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(deployment_id=1),
+                self._entity(deployment_id=2),
+            ])
+        self.assertIn("cannot navigate", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_overwrites_existing_value(
+        self, mock_create, _mock_search,
+    ):
+        # If the leaf already holds a non-None literal (e.g. the YAML
+        # author put a placeholder string), the link still overwrites
+        # it cleanly. Demonstrates the path-form is a normal
+        # assignment, not a "fill in None" specialisation.
+        store_1 = {
+            "destinations": {
+                "foo": {"to": "placeholder string"},
+            },
+        }
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'destinations["foo"]["to"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        self.assertIs(store_1["destinations"]["foo"]["to"], created[1])
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_subscript_path_deep_balanced_assignment(
+        self, mock_create, _mock_search,
+    ):
+        # Six levels deep — the walker recurses arbitrarily (no
+        # special-cased depth limit).
+        store_1 = {"a": {"b": {"c": {"d": {"e": {"f": None}}}}}}
+        make, created = self._make_create_with_attribute_store([store_1, {}])
+        mock_create.side_effect = make
+
+        b = self._builder(file_metadata={"x.yaml": {"links": [{
+            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "attribute": 'a["b"]["c"]["d"]["e"]["f"]',
+            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+        }]}})
+        b.build([
+            self._entity(deployment_id=1),
+            self._entity(deployment_id=2),
+        ])
+
+        self.assertIs(store_1["a"]["b"]["c"]["d"]["e"]["f"], created[1])

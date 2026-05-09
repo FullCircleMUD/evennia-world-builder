@@ -301,7 +301,12 @@ class Builder:
         attribute = link["attribute"]
         category = link.get("category")
         try:
-            if "[" in attribute:
+            if "[" in attribute or "]" in attribute:
+                # Either bracket triggers the subscript-path branch so
+                # malformed inputs like 'foo]' fail loudly via the path
+                # parser instead of being silently set as garbage
+                # attribute names. The validator catches these at
+                # validate time too; this is defence-in-depth.
                 if category is not None:
                     raise BuilderError(
                         f"links[{index}] in {path!r}: subscript-path attribute "

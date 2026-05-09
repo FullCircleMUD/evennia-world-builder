@@ -28,6 +28,7 @@ Adding a stateless check: write a predicate function and append it to
 (Tier 3). Adding a stateful check: write a method on Validator and call
 it from the per-entity loop.
 """
+import ast
 import importlib
 
 from .definitions import Definitions
@@ -232,6 +233,61 @@ def _check_cross_ref_dict_shape(value, entity_path: str, field_name: str) -> str
         return (
             f"{entity_path}: '{field_name}' cross-ref 'deployment_id' "
             f"must be non-negative, got {deployment_id}"
+        )
+
+    return None
+
+
+def _check_subscript_path_shape(attribute: str) -> str | None:
+    """Validate the subscript-path form of a links: `attribute` value.
+
+    The subscript-path syntax (see DESIGN/links.md) lets a link's
+    `attribute:` field carry a Python expression like
+    ``destinations["foo"]["bar"]`` so the Builder can navigate into an
+    existing structured attribute and assign the resolved cross-ref
+    at the leaf. This helper verifies the string parses cleanly into
+    that shape so badly-formed paths surface at validate time, before
+    any DB mutation, alongside other findings.
+
+    Caller is expected to invoke this only when ``attribute`` actually
+    contains ``[`` (bare attribute names go through
+    ``attributes.add(...)`` and don't need this check).
+
+    Returns ``None`` on a well-formed path, else an error string
+    suffix the caller can prefix with ``{prefix}: 'attribute' ``.
+
+    Accepted shapes:
+        foo["bar"]
+        foo["bar"]["baz"]
+        foo[0]["bar"]              (int indices distinguished from "0")
+        foo["bar"][2][3]
+
+    Refused shapes:
+        foo[unclosed               (SyntaxError)
+        foo.bar                    (Attribute access, not Subscript chain)
+        foo[bar]                   (bar is a Name, not a literal)
+        foo()["bar"]               (Call, not bare Name at the head)
+        ["bar"]                    (empty leading identifier)
+    """
+    try:
+        tree = ast.parse(attribute, mode="eval").body
+    except SyntaxError as e:
+        return f"is not valid Python subscript syntax: {e.msg}"
+
+    while isinstance(tree, ast.Subscript):
+        try:
+            ast.literal_eval(tree.slice)
+        except (ValueError, SyntaxError):
+            return (
+                "contains a non-literal subscript "
+                "(only string keys and integer indices are allowed)"
+            )
+        tree = tree.value
+
+    if not isinstance(tree, ast.Name):
+        return (
+            "must start with a bare attribute name "
+            "followed only by [..] subscripts"
         )
 
     return None
@@ -926,6 +982,26 @@ class Validator:
                 self._record_finding(
                     f"{prefix}: 'attribute' must be a non-empty string"
                 )
+            elif "[" in attribute or "]" in attribute:
+                # Either bracket triggers the subscript-path check, so
+                # malformed inputs like 'foo]' or 'dict(thing]' are
+                # caught at validate time instead of being silently
+                # set as garbage attribute names. See DESIGN/links.md
+                # § Subscript-path attribute syntax.
+                finding = _check_subscript_path_shape(attribute)
+                if finding is not None:
+                    self._record_finding(
+                        f"{prefix}: 'attribute' {finding}"
+                    )
+                # category: cannot be combined with subscript-path syntax
+                # (categories apply to top-level Evennia attribute keys; a
+                # path navigates inside an already-set attribute value).
+                if "category" in link:
+                    self._record_finding(
+                        f"{prefix}: 'category' cannot be used with "
+                        f"subscript-path attribute (category only applies "
+                        f"to bare attribute names)"
+                    )
 
         if "category" in link:
             category = link["category"]

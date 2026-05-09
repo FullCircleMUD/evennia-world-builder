@@ -74,7 +74,7 @@ The `attribute:` field accepts two forms:
 1. **Bare attribute name** — e.g. `attribute: other_side`. The Builder runs `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. This is the original shape.
 2. **Subscript path** — e.g. `attribute: 'destinations["ironback_peaks"]["destination"]'`. The Builder navigates into an existing structured attribute and assigns `points_to_obj` at the leaf.
 
-The presence of `[` in the attribute string is the dispatch signal: no `[` → bare; `[` present → subscript path.
+The presence of either `[` or `]` in the attribute string is the dispatch signal: no brackets → bare; either bracket present → subscript path. Triggering on either bracket (rather than just `[`) catches defensively-malformed inputs like `'dict(thing]'` — without this, a `]`-only string would slip past the path branch and be silently created as a garbage attribute name.
 
 #### When to use the subscript path
 
@@ -164,8 +164,8 @@ A new **pass 4** runs after pass 3 (incoming_exits dependency restore):
    - Resolve `entity` via `_resolve_cross_ref` (cache → DB). Must succeed.
    - Resolve `points_to` via `_resolve_cross_ref` (cache → DB). Must succeed.
    - Dispatch on `attribute`:
-     - No `[` in `attribute` → `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
-     - `[` in `attribute` → `_assign_via_subscript_path(entity_obj, attribute, points_to_obj)` which parses the path via `ast.parse`, walks the leading attribute and subscript chain, assigns the resolved object at the leaf, and re-saves the top-level attribute so the nested mutation persists.
+     - No `[` or `]` in `attribute` → `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
+     - `[` or `]` present → `_assign_via_subscript_path(entity_obj, attribute, points_to_obj)` which parses the path via `ast.parse`, walks the leading attribute and subscript chain, assigns the resolved object at the leaf, and re-saves the top-level attribute so the nested mutation persists.
 
 By the end of pass 3, `_built_by_id` is fully warm: own-build entities, DB-resolved cross-refs from pass 1+2, and any incoming-exits restorations. Pass 4 mostly hits the cache. The DB fallback handles the case where a link's target is in some file unrelated to anything pass 3 touched.
 
