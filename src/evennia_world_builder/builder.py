@@ -115,6 +115,31 @@ class Builder:
                 ) from e
             create_kwargs["destination"] = destination
 
+        # Optional `home:` field. Three paths per Evennia create_object
+        # semantics (manager.py:683-688):
+        #   - field absent → no kwarg → settings.DEFAULT_HOME (Limbo).
+        #   - null → nohome=True → object's home is None.
+        #   - cross-ref dict → resolve, pass home=<resolved obj>.
+        # Note: passing home=None to create_object does NOT yield None;
+        # it's a falsy value that falls through to settings.DEFAULT_HOME.
+        # Translation must use nohome=True for the null case.
+        if "home" in content:
+            home_value = content["home"]
+            if home_value is None:
+                create_kwargs["nohome"] = True
+            else:
+                try:
+                    home = self._resolve_cross_ref(
+                        home_value, entity.path, "home",
+                    )
+                except BuilderError:
+                    raise
+                except Exception as e:
+                    raise BuilderError(
+                        f"failed to resolve home for {entity.path!r}: {e}"
+                    ) from e
+                create_kwargs["home"] = home
+
         try:
             obj = create_object(**create_kwargs)
         except Exception as e:

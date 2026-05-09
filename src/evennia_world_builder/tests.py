@@ -4167,6 +4167,122 @@ class BuilderTest(TestCase):
         self.assertIn("not found in canonical file", str(ctx.exception))
 
 
+class BuilderHomeFieldTest(TestCase):
+    """Verify Builder.build's translation of `home:` into create_object kwargs.
+
+    YAML semantics → create_object semantics:
+      - field absent → no kwarg (Evennia default: settings.DEFAULT_HOME)
+      - null → nohome=True (object.home becomes None)
+      - cross-ref dict → home=<resolved_obj>
+
+    Note: passing home=None directly to create_object would fall through
+    to settings.DEFAULT_HOME — must use nohome=True for the null case.
+    See manager.py:683-688 in Evennia.
+    """
+
+    _NO_HOME = object()
+
+    def _entity(
+        self, *, path="x.yaml", deployment_id=1, location=None,
+        home=_NO_HOME, name="X", typeclass="ev.X",
+    ) -> LoadedEntity:
+        content = {
+            "deployment_id": deployment_id,
+            "name": name,
+            "typeclass": typeclass,
+            "location": location,
+        }
+        if home is not self._NO_HOME:
+            content["home"] = home
+        return LoadedEntity(location={}, content=content, path=path)
+
+    def _builder(self):
+        return Builder(Definitions(levels=("zone",)))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_home_absent_no_kwarg_passed(self, mock_create, _mock_search):
+        # Field absent → neither home= nor nohome= in create_kwargs.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity()])
+        kwargs = mock_create.call_args_list[0].kwargs
+        self.assertNotIn("home", kwargs)
+        self.assertNotIn("nohome", kwargs)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_home_null_translates_to_nohome_true(self, mock_create, _mock_search):
+        # YAML null → nohome=True, no home= kwarg.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        b.build([self._entity(home=None)])
+        kwargs = mock_create.call_args_list[0].kwargs
+        self.assertEqual(kwargs.get("nohome"), True)
+        self.assertNotIn("home", kwargs)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_home_cross_ref_resolves_to_target_obj(
+        self, mock_create, _mock_search,
+    ):
+        # YAML cross-ref dict → home=<that built object>, no nohome=.
+        created = []
+
+        def make(**kw):
+            obj = MagicMock(_kw=kw)
+            created.append(obj)
+            return obj
+        mock_create.side_effect = make
+
+        b = self._builder()
+        b.build([
+            self._entity(deployment_id=1, name="Target"),
+            self._entity(
+                deployment_id=2, name="Resident",
+                home={"deployment_file": "x.yaml", "deployment_id": 1},
+            ),
+        ])
+
+        target = created[0]
+        resident_kwargs = mock_create.call_args_list[1].kwargs
+        self.assertIs(resident_kwargs.get("home"), target)
+        self.assertNotIn("nohome", resident_kwargs)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_unresolved_home_raises(self, mock_create, _mock_search):
+        # Cross-ref to nothing → BuilderError naming the home field.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([self._entity(
+                home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            )])
+        self.assertIn("'home'", str(ctx.exception))
+        self.assertIn("does not resolve", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_same_file_forward_home_ref_refused(
+        self, mock_create, _mock_search,
+    ):
+        # Same ordering rule as location: target must be built before
+        # the entity that references it. Forward refs fail at create
+        # time with the operator-meaningful "does not resolve" message.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = self._builder()
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([
+                self._entity(
+                    deployment_id=1, name="Resident",
+                    home={"deployment_file": "x.yaml", "deployment_id": 2},
+                ),
+                self._entity(deployment_id=2, name="Target"),
+            ])
+        self.assertIn("'home'", str(ctx.exception))
+
+
 class BuilderPass4LinksTest(TestCase):
     """Verify Builder pass 4 (links) resolves and assigns each link.
 
