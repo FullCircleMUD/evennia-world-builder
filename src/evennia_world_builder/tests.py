@@ -2002,6 +2002,99 @@ class ValidatorDestinationWellFormedTest(TestCase):
         ))
 
 
+class ValidatorHomeWellFormedTest(TestCase):
+    """Tier 1 — `home:` (when present) is null or a strict cross-ref dict.
+
+    Optional field. Absence means "use Evennia's settings.DEFAULT_HOME"
+    (typically Limbo). When present, two valid shapes:
+    - null  → translates to nohome=True at create_object time.
+    - dict  → cross-ref to another entity, resolved by the Builder.
+
+    Same shape predicates as `location:` apply for the dict case via
+    the shared `_check_cross_ref_dict_shape` helper.
+    """
+
+    def _entity(self, content) -> LoadedEntity:
+        if isinstance(content, dict):
+            defaults = {
+                "deployment_id": 1,
+                "typeclass": "evennia.objects.objects.DefaultObject",
+                "name": "x",
+                "location": None,
+            }
+            for key, default in defaults.items():
+                if key not in content:
+                    content = {**content, key: default}
+        return LoadedEntity(location={}, content=content, path="a.yaml")
+
+    def _validator(self):
+        return Validator(Definitions(levels=("zone",)))
+
+    def test_home_absent_passes(self):
+        v = self._validator()
+        v.validate([self._entity({})])
+        self.assertEqual(v.errors, [])
+
+    def test_home_null_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"home": None})])
+        self.assertEqual(v.errors, [])
+
+    def test_well_formed_home_dict_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"home": {
+            "deployment_file": "a.yaml",
+            "deployment_id": 5,
+        }})])
+        self.assertEqual(v.errors, [])
+
+    def test_home_string_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"home": "Limbo"})])
+        self.assertTrue(any(
+            "'home' must be null or a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_home_int_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"home": 2})])
+        self.assertTrue(any(
+            "'home' must be null or a cross-ref dict" in e for e in v.errors
+        ))
+
+    def test_home_missing_deployment_file_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"home": {"deployment_id": 5}})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_file" in e
+            for e in v.errors
+        ))
+
+    def test_home_missing_deployment_id_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"home": {"deployment_file": "a.yaml"}})])
+        self.assertTrue(any(
+            "missing required key" in e and "deployment_id" in e
+            for e in v.errors
+        ))
+
+    def test_home_unexpected_key_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"home": {
+                "deployment_file": "a.yaml",
+                "deployment_id": 5,
+                "extra": "no",
+            }})])
+        self.assertTrue(any(
+            "unexpected key" in e for e in v.errors
+        ))
+
+
 class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
     """Tier 1 — entity with `destination:` must have non-null `location:`.
 

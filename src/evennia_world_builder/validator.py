@@ -302,6 +302,39 @@ def _check_destination_well_formed(entity: LoadedEntity) -> str | None:
     return _check_cross_ref_dict_shape(value, entity.path, "destination")
 
 
+def _check_home_well_formed(entity: LoadedEntity) -> str | None:
+    """Tier 1: ``home:`` (when present) is null or a cross-ref dict.
+
+    Optional field — absence means "use Evennia's settings.DEFAULT_HOME"
+    (typically Limbo). Two valid present-shapes:
+
+    - ``null`` — translates to ``nohome=True`` at create_object time;
+      the resulting object's ``home`` field is ``None``.
+    - ``{deployment_file: <str>, deployment_id: <non-negative int>}`` —
+      cross-ref dict pointing at the entity that should serve as this
+      object's home. Same identity scheme as ``location:`` /
+      ``destination:``; same Tier 4 resolution path.
+
+    The Builder translates the YAML field into the appropriate
+    create_object kwarg in step 4 of the home-field rollout.
+    """
+    content = entity.content if isinstance(entity.content, dict) else {}
+    if "home" not in content:
+        return None
+
+    value = content["home"]
+    if value is None:
+        return None
+
+    if not isinstance(value, dict):
+        return (
+            f"{entity.path}: 'home' must be null or a cross-ref dict "
+            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
+        )
+
+    return _check_cross_ref_dict_shape(value, entity.path, "home")
+
+
 def _check_location_not_null_when_destination_present(entity: LoadedEntity) -> str | None:
     """Tier 1: an entity with ``destination:`` must have non-null ``location:``.
 
@@ -674,6 +707,7 @@ class Validator:
         _check_typeclass_well_formed,
         _check_location_well_formed,
         _check_destination_well_formed,
+        _check_home_well_formed,
         _check_location_not_null_when_destination_present,
         _check_no_author_location_on_nested,
         _check_description_field_shape,
