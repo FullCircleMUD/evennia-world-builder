@@ -2,6 +2,8 @@
 # Documentation: see builder.md (co-located).
 import ast
 
+from django.core.exceptions import ObjectDoesNotExist
+
 from .definitions import Definitions
 from .errors import BuilderError
 from .loader import LoadedEntity
@@ -533,10 +535,26 @@ class Builder:
                 # return a handle whose underlying db row is already
                 # gone. Cleanup's post-condition ("the object doesn't
                 # exist after this") is already met — skip silently.
+                #
+                # Two ghost-detection signals:
+                #   1. `pk is None` — fast path for objects deleted via
+                #      Evennia's `.delete()` method, which clears pk.
+                #   2. `ObjectDoesNotExist` raised during this delete —
+                #      catches DATABASE-LEVEL cascade deletes (where
+                #      Django removed the row directly via ON_DELETE
+                #      foreign keys) which never notify the Python
+                #      wrapper. Such wrappers still have a cached pk
+                #      and `_is_deleted=False`, so signal 1 misses them
+                #      — but their internal field accessors raise
+                #      `ObjectDoesNotExist` because the underlying row
+                #      is gone (see evennia/utils/idmapper/models.py).
                 if getattr(obj, "pk", None) is None:
                     continue
                 try:
                     obj.delete()
+                except ObjectDoesNotExist:
+                    # Cascade-ghost — already gone, post-condition met.
+                    continue
                 except Exception as e:
                     raise BuilderError(
                         f"cleanup: failed to delete existing "

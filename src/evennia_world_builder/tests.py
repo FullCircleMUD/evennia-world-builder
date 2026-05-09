@@ -12,6 +12,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.test import TestCase, override_settings
 
 import evennia_world_builder
@@ -4203,6 +4204,53 @@ class BuilderTest(TestCase):
         ghost.delete.assert_not_called()
         # deleted_count reflects only the explicit deletion.
         self.assertEqual(b.deleted_count, 1)
+
+    @patch("evennia.utils.create.create_object")
+    @patch("evennia.utils.search.search_tag")
+    def test_cleanup_skips_cascade_ghosts_with_cached_pk(
+        self, mock_search, mock_create,
+    ):
+        # The OTHER ghost case: Django's database-level CASCADE delete
+        # (e.g. an exit whose destination room was just deleted) removes
+        # the underlying row directly, bypassing Evennia's `.delete()`
+        # method. The Python wrapper still in our `existing` snapshot
+        # therefore has a CACHED pk (not None) and `_is_deleted=False`
+        # — both ghost-detection signals lie. The wrapper only reveals
+        # itself as a ghost when something tries to access a field
+        # through the Django ORM, which raises ObjectDoesNotExist
+        # (see evennia/utils/idmapper/models.py:120-130).
+        #
+        # Cleanup catches that exception during the `.delete()` call
+        # and skips the cascade-ghost silently.
+        live_room = MagicMock()
+        live_room.pk = 100
+        live_room.dbref = "#100"
+
+        cascade_ghost = MagicMock()
+        cascade_ghost.pk = 627  # cached pk from before the cascade
+        cascade_ghost.dbref = "#627"
+        cascade_ghost.delete.side_effect = ObjectDoesNotExist(
+            "Cannot access db_destination: Hosting object was already deleted."
+        )
+
+        another_live = MagicMock()
+        another_live.pk = 200
+        another_live.dbref = "#200"
+
+        mock_search.return_value = [live_room, cascade_ghost, another_live]
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+
+        b = self._builder()
+        # Should not raise — the cascade-ghost's ObjectDoesNotExist is
+        # caught and the loop continues to delete the remaining live.
+        b.build([self._entity(deployment_id=1, location=None)])
+
+        live_room.delete.assert_called_once()
+        cascade_ghost.delete.assert_called_once()
+        another_live.delete.assert_called_once()
+        # deleted_count counts only successful deletes — the ghost
+        # is excluded since its delete raised.
+        self.assertEqual(b.deleted_count, 2)
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
