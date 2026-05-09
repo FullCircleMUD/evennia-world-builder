@@ -50,7 +50,7 @@ For each file path in the build set: walk its `links:` list (a file-level YAML k
 - Resolve the link's `entity` and `points_to` cross-refs via the same `_resolve_cross_ref` helper passes 1/2 use (cache → DB tag-search → BuilderError).
 - Call `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
 
-By the time pass 4 runs, `_built_by_id` holds every own-build entity, every cross-ref the build resolved through DB fallback, and every pass-3 incoming_exits restoration — so most link resolutions hit the cache. Cross-file links to entities in unrelated files DB-fall-through identically to how `location:` and `destination:` do today.
+By the time pass 4 runs, `_built_by_id` holds every own-build entity, every cross-ref the build resolved through DB fallback, and every pass-3 incoming_exits restoration — so most link resolutions hit the cache. Cross-file links to entities in unrelated files DB-fall-through identically to how `location:`, `destination:`, and `home:` do today.
 
 `links:` is a generic primitive that doesn't bake in any consumer game concepts (no door type, no pair sugar) — each link is a single directed assignment. Reciprocal pairs are two link entries. See [links.md](links.md) for use cases and the cross-file "declare in both files" convention.
 

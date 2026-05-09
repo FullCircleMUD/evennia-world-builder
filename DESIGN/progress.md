@@ -2,7 +2,21 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
-## 2026-05-08 (latest)
+## 2026-05-09 (latest)
+
+- **Per-entity `home:` field — shipped.** Optional per-entity YAML field that controls the Evennia `home` reference set on the new object. Faithfully exposes Evennia's `create_object`'s `home=`/`nohome=` surface. Three valid forms: absent (defaults to `settings.DEFAULT_HOME`), `null` (translates to `nohome=True`, object's `home` becomes `None`), or a `{deployment_file, deployment_id}` cross-ref dict (resolves to a target entity). 347 unit tests green (327 → 347, +20 across four steps). The motivating case is fixtures whose home should be unset (avoiding stray Limbo-bound artefacts), but the more load-bearing real-world case is objects with a meaningful home elsewhere — NPCs that retreat to a quarters room at night, quest items that auto-return to a giver, characters whose login destination is a particular dwelling.
+
+  - **Step 1 — Loader contract.** No code change; the Loader's existing per-entity content passthrough handles arbitrary keys. 2 contract tests asserting `home: null` and `home: {ref}` survive verbatim.
+
+  - **Step 2 — Validator Tier 1.** New `_check_home_well_formed` predicate registered in `PER_ENTITY_PREDICATES`. Optional field; when present, must be `null` or a strict cross-ref dict. 8 new tests.
+
+  - **Step 3 — Validator Tier 4.** Extends `_check_cross_refs` to walk `home:` alongside `location:` / `destination:`. Reuses the existing `_check_one_cross_ref` defensive helper, so null homes (meaningful, not malformed) skip cleanly without producing false findings. 5 new tests.
+
+  - **Step 4 — Builder.** `_build_one` reads `content["home"]` and translates per Evennia semantics ([manager.py:683-688](https://github.com/evennia/evennia/blob/main/evennia/objects/manager.py)): absent → no kwarg; null → `nohome=True` (the non-obvious bit — passing `home=None` falls through to DEFAULT_HOME); cross-ref → `home=<resolved>` via the same `_resolve_cross_ref` location uses. 5 new tests covering all paths plus same-file forward-ref refusal.
+
+  Cross-file home refs resolve through DB tag-search fallback identically to location/destination. Same ordering rules apply (target must precede source within a file or live in DB from a previous build).
+
+## 2026-05-08
 
 - **`links:` — generic file-level cross-entity attribute references — shipped.** New file-level YAML key for setting attributes whose values are references to other built entities (e.g. ExitDoor's `other_side`, teleporter's target, NPC's master). The library doesn't bake in any consumer game concepts; each link is a single directed assignment, reciprocal pairs are two entries. 327 unit tests green (293 → 327, +34 across five steps). Design doc: [links.md](links.md).
 

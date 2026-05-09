@@ -50,7 +50,7 @@ def _check_typeclass_resolvable(entity) -> str | None:
 
 ### Tier 4 — Cross-ref resolution (caller opt-in)
 
-Cross-reference resolution against the full `seen_ids` index — for both `location:` and `destination:` dicts. Runs only when the caller passes `resolve_cross_refs=True` to `Validator.__init__`, asserting they've supplied whole-repo entities. Production callers (`wb_build` whole-repo pre-validation, `wb-validate` CLI) opt in; tests default off so narrow-scope predicate tests don't flap on dangling refs they don't care about.
+Cross-reference resolution against the full `seen_ids` index — for `location:`, `destination:`, and `home:` dicts. Runs only when the caller passes `resolve_cross_refs=True` to `Validator.__init__`, asserting they've supplied whole-repo entities. Production callers (`wb_build` whole-repo pre-validation, `wb-validate` CLI) opt in; tests default off so narrow-scope predicate tests don't flap on dangling refs they don't care about.
 
 ## Two orthogonal switches
 
@@ -121,7 +121,7 @@ Same Validator, two output channels.
 | 3 — Evennia-runtime | `_check_typeclass_resolvable` | typeclass dotted path can't be imported, or class missing on the loaded module |
 | 3 — Evennia-runtime | `_check_destination_required_for_exit_typeclass` | typeclass inherits from Evennia's `DefaultExit` but no `destination:` is set |
 | 3 — Evennia-runtime | `_check_destination_forbidden_for_non_exit_typeclass` | typeclass does NOT inherit from `DefaultExit` but `destination:` is set |
-| 4 — Cross-ref | `_check_cross_refs` (post-loop phase) | any `location:` or `destination:` cross-ref (per-entity), `incoming_exits[N]` cross-ref (file-level), or `links[N].entity` / `links[N].points_to` cross-ref (file-level) `(deployment_file, deployment_id)` not present in the `seen_ids` index built during the per-entity pass. All three categories share the same `_check_one_cross_ref` helper. |
+| 4 — Cross-ref | `_check_cross_refs` (post-loop phase) | any `location:`, `destination:`, or `home:` cross-ref (per-entity), `incoming_exits[N]` cross-ref (file-level), or `links[N].entity` / `links[N].points_to` cross-ref (file-level) `(deployment_file, deployment_id)` not present in the `seen_ids` index built during the per-entity pass. All categories share the same `_check_one_cross_ref` helper. Null `home:` values are skipped (meaningful, not malformed). |
 
 All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader now synthesises `content["location"]` as a cross-ref dict on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
 
@@ -142,7 +142,7 @@ No defaults, no fallbacks. The Builder relies on the validator's guarantees to s
 
 Two layers, each owning a different correctness check:
 
-- **Validator Tier 4 — existence.** When `resolve_cross_refs=True`, the validator's post-loop phase walks every entity's `location:` and `destination:` cross-refs and verifies the `(deployment_file, deployment_id)` pair appears in `seen_ids`. Catches "this ref points at nothing in the build set" — dangling refs, deployment_id typos, file-name typos. Forward refs within the same file resolve correctly because `seen_ids` is fully built before Tier 4 runs.
+- **Validator Tier 4 — existence.** When `resolve_cross_refs=True`, the validator's post-loop phase walks every entity's `location:`, `destination:`, and `home:` cross-refs and verifies the `(deployment_file, deployment_id)` pair appears in `seen_ids`. Catches "this ref points at nothing in the build set" — dangling refs, deployment_id typos, file-name typos. Forward refs within the same file resolve correctly because `seen_ids` is fully built before Tier 4 runs.
 - **Builder runtime — usability.** The Builder's `_resolve_cross_ref` does a single dict lookup against its `_built_by_id` map at create time (see [builder.md](builder.md)). For same-file backward refs this always hits (depth-first pre-order). Same-file forward refs miss and are refused at create time — a separate decision from Tier 4 (which says the ref is valid in the abstract; the Builder says "but it can't be used yet at this point in the build"). Cross-file refs to entities NOT in the current build invocation will fall through to a DB tag-search lookup once spike 4 step 5 lands; until then they refuse with `BuilderError`.
 
 The two layers are independent — Tier 4 catches *correctness* problems before any DB mutation, and the Builder enforces *ordering* problems at create time.

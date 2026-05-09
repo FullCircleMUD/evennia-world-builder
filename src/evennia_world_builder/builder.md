@@ -109,7 +109,7 @@ The partition is determined by `"destination" in content` — the same signal th
 #### Per-entity construction order
 
 ```
-_resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags
+_resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → [translate home: → home= or nohome=True] → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags
 ```
 
 `create_object` triggers the typeclass's `at_object_creation()` hook, which can set its own default attributes (e.g. `self.db.room_type = "bakery"`). Any subsequent `_apply_*` call overwrites those defaults if the YAML declares the same key. **Contract: typeclass declares defaults; YAML overrides per-instance.**
@@ -127,6 +127,7 @@ Optional fields:
 
 - `content["description"]` — string, written to `db.desc` via the `attributes` kwarg of `create_object` (default `""`).
 - `content["destination"]` — strict `{deployment_file, deployment_id}` cross-ref dict. Presence makes the entity an exit (built in pass 2). Validator Tier 1 has guaranteed shape; Tier 3 has guaranteed it's consistent with the typeclass (DefaultExit-derived ⇒ required; otherwise ⇒ forbidden); Tier 4 (when run) has guaranteed the ref resolves in `seen_ids`.
+- `content["home"]` — `null`, or strict `{deployment_file, deployment_id}` cross-ref dict, or absent. Translates to a create_object kwarg per Evennia semantics: absent ⇒ no kwarg passed (defaults to `settings.DEFAULT_HOME`); `null` ⇒ `nohome=True` (object's `home` becomes `None`); cross-ref dict ⇒ `home=<resolved obj>`. The null translation is non-obvious — passing `home=None` directly to create_object falls through to `settings.DEFAULT_HOME` because the manager-level check is truthy-only (see [evennia/objects/manager.py:683-688](https://github.com/evennia/evennia/blob/main/evennia/objects/manager.py)). Validator Tier 1 has guaranteed shape; Tier 4 (when run) has guaranteed any well-shaped ref resolves in `seen_ids`.
 - `content["aliases"]` — list of non-empty strings.
 - `content["locks"]` — non-empty lockstring.
 - `content["attributes"]` — list of `{key, value, category?}` records.

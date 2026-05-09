@@ -103,6 +103,28 @@ links:
 
 For paired cross-file links, authors declare the same link entries in both files (the cross-file convention — see [links.md](links.md)). This makes each file an independently rebuildable restoration unit without library-side inbound-link restoration machinery.
 
+## Per-entity `home:`
+
+Optional per-entity field that controls the Evennia `home` reference set on the new object — the fallback location Evennia uses when an object's location is deleted. Three valid forms:
+
+| YAML | create_object kwarg | Resulting `obj.home` |
+|---|---|---|
+| field absent | (no `home=`/`nohome=` passed) | `settings.DEFAULT_HOME` (Limbo by convention) |
+| `home: null` | `nohome=True` | `None` |
+| `home: { deployment_file, deployment_id }` | `home=<resolved_obj>` | that resolved object |
+
+The null translation is non-obvious: passing `home=None` to `create_object` does **not** yield `home=None` — Evennia's `if home:` check is falsy on None and falls through to `settings.DEFAULT_HOME`. The Builder converts YAML null into `nohome=True` instead, which is the only way to get the no-home outcome.
+
+**Use cases.** The motivating case is **fixtures** that should never relocate to Limbo if their location is deleted (a fountain bolted into the market square shouldn't end up in nowhere). For the library's cleanup-on-rebuild model the practical effect is small (tag-sweep deletes co-located fixtures with their location before any home-relocation logic fires). The more load-bearing case is **objects with a meaningful home elsewhere** — NPCs that retreat to a quarters room at night, quest items that auto-return to a giver, characters whose login destination is a particular dwelling. For those, the cross-ref form is the actively-used path.
+
+`home:` cross-refs use the same `(deployment_file, deployment_id)` identity scheme as `location:` and `destination:` and resolve through the same `_resolve_cross_ref` machinery (in-build map → DB tag-search fallback). Same-file forward refs fail at create time with a "does not resolve" error; same-file backward refs and cross-file refs work transparently.
+
+**End-to-end behaviour:**
+
+- Validator's Tier 1 file-level shape check refuses malformed `home:` values (must be absent, `null`, or a strict cross-ref dict).
+- Validator's Tier 4 cross-ref resolution (when run on whole-repo entities) verifies any well-shaped `home:` cross-ref points at an entity that exists somewhere in the repo. Null homes are skipped at Tier 4 (not malformed, just meaningful).
+- Builder's `_build_one` reads `content["home"]` per entity, translates per the table above, and includes the appropriate kwarg in the `create_object` call.
+
 ## Cross-references
 
 Cross-references between entities use the composite identity. **Both keys are always required** — no same-file inference. Uniform shape simplifies the validator's predicate and the Builder's lookup.
