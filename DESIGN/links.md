@@ -49,9 +49,9 @@ links:
 | Field        | Type    | Required | Meaning |
 |---            |---       |---        |---       |
 | `entity`     | dict    | yes      | The entity whose attribute is being set. Always a `(deployment_file, deployment_id)` cross-ref dict, even for same-file refs. |
-| `attribute`  | string  | yes      | The attribute key to set on `entity`. |
+| `attribute`  | string  | yes      | The attribute key (or subscript path) on `entity` that receives `points_to`. See [Subscript-path attribute syntax](#subscript-path-attribute-syntax) for the path form. |
 | `points_to`  | dict    | yes      | The entity that becomes the attribute's value. Same `(deployment_file, deployment_id)` shape. |
-| `category`   | string  | no       | Optional Evennia attribute category. Mirrors the existing `attributes:` block's optional `category` field. Defaults to `null` (uncategorised). |
+| `category`   | string  | no       | Optional Evennia attribute category. Mirrors the existing `attributes:` block's optional `category` field. Defaults to `null` (uncategorised). Cannot be combined with subscript-path syntax — see below. |
 
 ### Semantics
 
@@ -67,11 +67,77 @@ That's it. Identical to the assignment a consumer would write by hand if connect
 
 `entity == points_to` is allowed. The library does not refuse it. If the consumer's typeclass has a legitimate use for self-referential pointers, the YAML supports it.
 
+### Subscript-path attribute syntax
+
+The `attribute:` field accepts two forms:
+
+1. **Bare attribute name** — e.g. `attribute: other_side`. The Builder runs `entity_obj.attributes.add(attribute, points_to_obj, category=category)`. This is the original shape.
+2. **Subscript path** — e.g. `attribute: 'destinations["ironback_peaks"]["destination"]'`. The Builder navigates into an existing structured attribute and assigns `points_to_obj` at the leaf.
+
+The presence of `[` in the attribute string is the dispatch signal: no `[` → bare; `[` present → subscript path.
+
+#### When to use the subscript path
+
+Consumer typeclasses sometimes hold attributes that are themselves nested structures (a dict-of-dicts, a list-of-dicts, etc.) where one slot inside the structure is a cross-ref to another entity. A canonical FCM example: `RoomGateway.destinations` is a dict keyed by zone name, each value a dict of route metadata, one of whose keys (`destination`) holds the target Room object.
+
+Without the subscript path, the only way to express "this nested slot is a cross-ref" is to set the whole structure via Python after build. The subscript path lets the YAML carry the literal scaffold (with a `null` placeholder at the cross-ref slot) and a links: entry that fills in the placeholder. Same write semantics as a hand-written assignment, just declared instead of imperatively coded.
+
+#### Required preconditions
+
+The leading bare identifier in the path names a top-level attribute that **must already exist** on `entity` by the time pass 4 runs. The standard pattern is to declare the structure in the entity's `attributes:` block with a `null` placeholder at the path's leaf:
+
+```yaml
+entities:
+  - deployment_id: 1
+    typeclass: typeclasses.terrain.rooms.room_gateway.RoomGateway
+    name: Eastern Crossroads
+    location: null
+    attributes:
+      - key: destinations
+        value:
+          ironback_peaks:
+            label: Ironback Peaks
+            destination: null              # ← placeholder
+            food_cost: 3
+          cloverfen:
+            label: Cloverfen
+            destination: null              # ← placeholder
+            food_cost: 2
+
+links:
+  - entity:    { deployment_file: shard0/millholm/gateways/east_gate.yaml, deployment_id: 1 }
+    attribute: 'destinations["ironback_peaks"]["destination"]'
+    points_to: { deployment_file: shard0/ironback-peaks/gateways/sw_gate.yaml, deployment_id: 1 }
+  - entity:    { deployment_file: shard0/millholm/gateways/east_gate.yaml, deployment_id: 1 }
+    attribute: 'destinations["cloverfen"]["destination"]'
+    points_to: { deployment_file: shard0/cloverfen/gateways/nw_gate.yaml, deployment_id: 1 }
+```
+
+After build, `east_gate.db.destinations["ironback_peaks"]["destination"]` is the live `sw_gate` Room object; sibling literal data (`label`, `food_cost`) is untouched.
+
+#### What the path syntax accepts
+
+The string is parsed via Python's `ast.parse(..., mode="eval")`. The leading expression must be a bare identifier (`ast.Name`); each subscript must be a literal value (`ast.literal_eval` is applied to the slice). This means:
+
+- String keys — `'foo["bar"]'` ✓
+- Integer indices — `'routes[0]["to"]'` ✓ (parser distinguishes `0` int from `"0"` string)
+- Mixed — `'foo[0]["bar"][2]'` ✓
+- Bare attribute access in the middle — `'foo.bar'` ✗ (only the leading identifier is an attribute access; everything after must be subscripts)
+- Function calls or other expressions — ✗ (refused at build time with a clear error)
+
+Quoting note: subscript-path strings contain `[` which YAML interprets as flow-style sequence start. Wrap the value in single quotes (`'destinations["foo"]"'`) so YAML treats it as a plain string.
+
+#### Constraints and persistence
+
+- **`category:` cannot be combined with subscript path.** Categories are an Evennia attribute-store concept that applies to the top-level attribute only. A path-form link refuses with `BuilderError` if `category:` is also set.
+- **The walked attribute is re-saved.** Evennia's `attributes.get()` returns a plain Python dict, not a `_SaverDict`, so nested mutations don't auto-persist. The Builder explicitly calls `attributes.add(name, top)` after walking to re-save the mutated top-level value. Authors don't need to think about this — it just works.
+- **Failure modes are loud.** Missing top-level attribute, mid-walk navigation failure (key/index doesn't exist), malformed Python syntax, and category-with-path are all surfaced as `BuilderError` before any further link runs.
+
 ## Validator tier mapping
 
 `links:` validation slots into the existing predicate-tier architecture (see [validator.md](validator.md)):
 
-- **Tier 1 (stateless, always run).** Each link entry has `entity`, `attribute`, `points_to` of correct types; `entity` and `points_to` are well-formed cross-ref dicts; `attribute` is a non-empty string; `category` if present is a string. Findings list bad shape with the file path and the link's index in the list.
+- **Tier 1 (stateless, always run).** Each link entry has `entity`, `attribute`, `points_to` of correct types; `entity` and `points_to` are well-formed cross-ref dicts; `attribute` is a non-empty string (the same string check covers both the bare-name and subscript-path forms — path syntax is parsed at build time, not validated at validator time); `category` if present is a string. Findings list bad shape with the file path and the link's index in the list.
 
 - **Tier 2 (stateful per-file).** None — links don't introduce per-file accumulating state beyond what `seen_ids` already tracks.
 
@@ -97,7 +163,9 @@ A new **pass 4** runs after pass 3 (incoming_exits dependency restore):
 4. **Pass 4 (new)** — walk `file_metadata[path]["links"]` for every file in scope. For each link:
    - Resolve `entity` via `_resolve_cross_ref` (cache → DB). Must succeed.
    - Resolve `points_to` via `_resolve_cross_ref` (cache → DB). Must succeed.
-   - Call `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
+   - Dispatch on `attribute`:
+     - No `[` in `attribute` → `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
+     - `[` in `attribute` → `_assign_via_subscript_path(entity_obj, attribute, points_to_obj)` which parses the path via `ast.parse`, walks the leading attribute and subscript chain, assigns the resolved object at the leaf, and re-saves the top-level attribute so the nested mutation persists.
 
 By the end of pass 3, `_built_by_id` is fully warm: own-build entities, DB-resolved cross-refs from pass 1+2, and any incoming-exits restorations. Pass 4 mostly hits the cache. The DB fallback handles the case where a link's target is in some file unrelated to anything pass 3 touched.
 
@@ -149,8 +217,8 @@ This makes each file independently rebuildable: a partial rebuild of either side
 
 - Loader: extend the file-level metadata extraction to include `links:` alongside `incoming_exits:` in `LoadResult.file_metadata[path]`.
 - Validator: add stateless predicate(s) for link shape (Tier 1) and extend Tier 4 cross-ref resolution to include `entity` and `points_to`.
-- Builder: add `_run_pass_4(file_paths_in_scope)` invoked from `build()` after `_run_pass_3`. Resolves each link's `entity` and `points_to` via `_resolve_cross_ref` and calls `obj.attributes.add(...)`.
-- Tests: synthetic fixtures in test-yaml covering at minimum (a) same-file pair (door-style), (b) cross-file one-way (teleporter-style), (c) self-link.
+- Builder: add `_run_pass_4(file_paths_in_scope)` invoked from `build()` after `_run_pass_3`. Resolves each link's `entity` and `points_to` via `_resolve_cross_ref` and dispatches to either `obj.attributes.add(...)` (bare name) or `_assign_via_subscript_path(...)` (path form, parses via `ast.parse`).
+- Tests: synthetic fixtures in test-yaml covering at minimum (a) same-file pair (door-style), (b) cross-file one-way (teleporter-style), (c) self-link, (d) subscript-path assignment into a dict-of-dicts attribute.
 
 ## See also
 

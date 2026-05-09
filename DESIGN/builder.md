@@ -45,10 +45,10 @@ If pass 3 needs to fetch a missing dep but no `reader` was configured at constru
 
 ### Pass 4 — links assignment
 
-For each file path in the build set: walk its `links:` list (a file-level YAML key declaring cross-entity attribute references — see [links.md](links.md) for the design rationale and YAML shape). For each link entry:
+For each file path in the build set: walk its `links:` list (a file-level YAML key declaring cross-entity attribute references — see [links.md](links.md) for the design rationale, YAML shape, and the subscript-path attribute syntax for assigning cross-refs into nested dict/list structures). For each link entry:
 
 - Resolve the link's `entity` and `points_to` cross-refs via the same `_resolve_cross_ref` helper passes 1/2 use (cache → DB tag-search → BuilderError).
-- Call `entity_obj.attributes.add(attribute, points_to_obj, category=category)`.
+- Dispatch on the `attribute` field. Bare names (no `[`) call `entity_obj.attributes.add(attribute, points_to_obj, category=category)` — Evennia's normal attribute write path. Subscript paths (e.g. `'destinations["foo"]["bar"]'`) call `_assign_via_subscript_path` which parses the path with `ast.parse`, walks the existing top-level attribute and subscript chain, assigns the resolved object at the leaf, and re-saves the top-level attribute so Evennia persists the nested mutation.
 
 By the time pass 4 runs, `_built_by_id` holds every own-build entity, every cross-ref the build resolved through DB fallback, and every pass-3 incoming_exits restoration — so most link resolutions hit the cache. Cross-file links to entities in unrelated files DB-fall-through identically to how `location:`, `destination:`, and `home:` do today.
 
