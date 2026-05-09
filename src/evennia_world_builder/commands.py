@@ -15,7 +15,6 @@ ultimately exercise. Validation gating (when wb_build pre-validates
 the whole repo vs trusting the consumer's CI gate) is documented in
 DESIGN/validation-gating.md.
 """
-import pprint
 
 from evennia.commands.command import Command as BaseCommand
 from evennia.utils.utils import run_async
@@ -135,7 +134,9 @@ def _run_validator(
         messages.extend(validator.messages)
         messages.append(f"wb_build: refusing to build — {refusal_label}: {e}")
         return False
-    messages.extend(validator.messages)
+    # On success: do not flush validator.messages (the success-path
+    # messages are diagnostic noise for the operator). Failures still
+    # get them above so findings reach the caller.
     return True
 
 
@@ -248,11 +249,6 @@ class CmdWBBuild(BaseCommand):
             messages.append(f"wb_build: {e}")
             return messages
 
-        messages.append(
-            f"wb_build: levels={list(definitions.levels)}, query={query}, "
-            f"flags={sorted(flags)}"
-        )
-
         finder = Finder(reader, definitions)
         loader = Loader(reader, definitions)
 
@@ -263,13 +259,9 @@ class CmdWBBuild(BaseCommand):
         force_validate = _FORCE_VALIDATE_FLAG in flags
         should_pre_validate = (not definitions.repo_ci_pre_validation) or force_validate
 
+        messages.append("wb_build: starting validation")
+
         if should_pre_validate:
-            reason = (
-                "--force-validate flag set"
-                if force_validate
-                else "definitions.repo-ci-pre-validation is False"
-            )
-            messages.append(f"wb_build: pre-validating whole repo ({reason})")
             try:
                 load_result = loader.load(finder.find())
             except FinderManifestError as e:
@@ -285,10 +277,6 @@ class CmdWBBuild(BaseCommand):
             all_entities = load_result.entities
             file_metadata = load_result.file_metadata
 
-            messages.append(
-                f"wb_build: pre-validation loaded {len(all_entities)} "
-                f"entit{'y' if len(all_entities) == 1 else 'ies'} (whole repo)"
-            )
             if not _run_validator(
                 messages, definitions, all_entities, "pre-validation failed",
                 resolve_cross_refs=True,
@@ -297,15 +285,7 @@ class CmdWBBuild(BaseCommand):
                 return messages
 
             entities = _filter_by_query(all_entities, query)
-            messages.append(
-                f"wb_build: filtered to {len(entities)} entit"
-                f"{'y' if len(entities) == 1 else 'ies'} matching scope"
-            )
         else:
-            messages.append(
-                "wb_build: skipping pre-validation "
-                "(definitions.repo-ci-pre-validation is True; trusting CI gate)"
-            )
             try:
                 found = finder.find(query)
             except FinderQueryError as e:
@@ -314,11 +294,6 @@ class CmdWBBuild(BaseCommand):
             except FinderManifestError as e:
                 messages.append(f"wb_build: manifest error: {e}")
                 return messages
-
-            messages.append(
-                f"wb_build: Finder located path={found.path!r}, "
-                f"kind={found.kind}, location={found.location}"
-            )
 
             try:
                 load_result = loader.load(found)
@@ -332,10 +307,6 @@ class CmdWBBuild(BaseCommand):
             entities = load_result.entities
             file_metadata = load_result.file_metadata
 
-            messages.append(
-                f"wb_build: Loader returned {len(entities)} entit"
-                f"{'y' if len(entities) == 1 else 'ies'}"
-            )
             if not _run_validator(
                 messages, definitions, entities, "validation failed",
                 resolve_cross_refs=False,
@@ -343,11 +314,8 @@ class CmdWBBuild(BaseCommand):
             ):
                 return messages
 
-        for i, entity in enumerate(entities, 1):
-            messages.append(
-                f"  [{i}] {entity.path} — location={entity.location}"
-            )
-            messages.append(f"      content: {pprint.pformat(entity.content)}")
+        messages.append("wb_build: validation complete")
+        messages.append("wb_build: starting building")
 
         builder = Builder(
             definitions,
@@ -362,15 +330,15 @@ class CmdWBBuild(BaseCommand):
 
         if builder.deleted_count:
             messages.append(
-                f"wb_build: Builder cleaned up {builder.deleted_count} existing "
-                f"object{'' if builder.deleted_count == 1 else 's'} "
-                f"(cleanup-on-rebuild)"
+                f"wb_build: cleaned up {builder.deleted_count} existing "
+                f"object{'' if builder.deleted_count == 1 else 's'}"
             )
-        messages.append(
-            f"wb_build: Builder created {len(created)} object{'' if len(created) == 1 else 's'}:"
-        )
         for obj in created:
             messages.append(f"  {obj.dbref} {obj.key} ({obj.typeclass_path})")
+        messages.append(
+            f"wb_build: finished building "
+            f"({len(created)} object{'' if len(created) == 1 else 's'})"
+        )
         return messages
 
     def _on_async_return(self, messages: list) -> None:
