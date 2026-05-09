@@ -606,6 +606,36 @@ class LoaderTest(TestCase):
             "description": "Warmly lit.",
         })
 
+    def test_loaded_entity_carries_home_field_null(self):
+        # `home: null` in YAML is a per-entity field that the Loader
+        # passes through verbatim in entity.content, ready for the
+        # Builder to translate into create_object's nohome=True kwarg.
+        # See DESIGN/home.md (Validator/Builder downstream consume it).
+        result = self._load_yaml_result({
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultObject",
+            "name": "A fixture",
+            "location": None,
+            "home": None,
+        })
+        self.assertEqual(result.entities[0].content["home"], None)
+
+    def test_loaded_entity_carries_home_field_cross_ref(self):
+        # `home: {deployment_file, deployment_id}` likewise rides through
+        # entity.content untouched. Cross-ref resolution happens at
+        # Builder time via the same `_resolve_cross_ref` location uses.
+        result = self._load_yaml_result({
+            "deployment_id": 1,
+            "typeclass": "evennia.objects.objects.DefaultObject",
+            "name": "A courier",
+            "location": None,
+            "home": {"deployment_file": "x.yaml", "deployment_id": 2},
+        })
+        self.assertEqual(
+            result.entities[0].content["home"],
+            {"deployment_file": "x.yaml", "deployment_id": 2},
+        )
+
     def test_index_pointing_at_missing_file_raises(self):
         scaffold = {
             "definitions.yaml": {"levels": ["zone"]},
