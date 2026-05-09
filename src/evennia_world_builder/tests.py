@@ -3056,9 +3056,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
     `wb-validate` set the flag; tests default off.
     """
 
+    _NO_HOME = object()  # sentinel — distinguish "omit home" from "home: null"
+
     def _entity(
         self, *, path, deployment_id,
-        location=None, destination=None,
+        location=None, destination=None, home=_NO_HOME,
     ) -> LoadedEntity:
         content = {
             "deployment_id": deployment_id,
@@ -3068,6 +3070,8 @@ class ValidatorCrossRefResolutionTest(TestCase):
         }
         if destination is not None:
             content["destination"] = destination
+        if home is not self._NO_HOME:
+            content["home"] = home
         return LoadedEntity(location={}, content=content, path=path)
 
     def _validator(self, *, resolve_cross_refs=True, file_metadata=None):
@@ -3161,6 +3165,56 @@ class ValidatorCrossRefResolutionTest(TestCase):
             "'destination' cross-ref to" in e and "does not resolve" in e
             for e in v.errors
         ))
+
+    # --- home: per-entity cross-ref ----------------------------------------
+    #
+    # `home:` is an optional per-entity field. Tier 4 walks it the same way
+    # as location/destination: well-shaped dict refs must resolve in
+    # seen_ids; null is a meaningful value (translates to nohome=True at
+    # build time) and must not produce a Tier 4 finding; absence likewise.
+
+    def test_home_absent_passes(self):
+        v = self._validator()
+        v.validate([self._entity(path="a.yaml", deployment_id=1, location=None)])
+        self.assertEqual(v.errors, [])
+
+    def test_home_null_passes(self):
+        v = self._validator()
+        v.validate([self._entity(
+            path="a.yaml", deployment_id=1, location=None, home=None,
+        )])
+        self.assertEqual(v.errors, [])
+
+    def test_home_cross_ref_resolves(self):
+        v = self._validator()
+        v.validate([
+            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(
+                path="a.yaml", deployment_id=2, location=None,
+                home={"deployment_file": "a.yaml", "deployment_id": 1},
+            ),
+        ])
+        self.assertEqual(v.errors, [])
+
+    def test_home_unresolved_reported(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity(
+                path="a.yaml", deployment_id=1, location=None,
+                home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            )])
+        self.assertTrue(any(
+            "'home' cross-ref to" in e and "does not resolve" in e
+            for e in v.errors
+        ))
+
+    def test_home_skipped_when_resolve_cross_refs_false(self):
+        v = self._validator(resolve_cross_refs=False)
+        v.validate([self._entity(
+            path="a.yaml", deployment_id=1, location=None,
+            home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+        )])
+        self.assertFalse(any("does not resolve" in e for e in v.errors))
 
     def test_target_file_present_but_id_missing_reported(self):
         # Target file is in seen_ids but the specific deployment_id

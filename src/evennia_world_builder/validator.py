@@ -963,7 +963,7 @@ class Validator:
         """
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
-            for field_name in ("location", "destination"):
+            for field_name in ("location", "destination", "home"):
                 self._check_one_cross_ref(
                     entity.path, content.get(field_name), field_name,
                 )
