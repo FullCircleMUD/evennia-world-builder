@@ -17,6 +17,7 @@ from django.test import TestCase, override_settings
 
 import evennia_world_builder
 from evennia_world_builder import (
+    ApiError,
     Builder,
     BuilderError,
     Definitions,
@@ -40,6 +41,8 @@ from evennia_world_builder import (
     Validator,
     ValidatorError,
     get_reader_class,
+    wb_lookup_dbref,
+    wb_lookup_object,
 )
 
 
@@ -5232,3 +5235,80 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         ])
 
         self.assertIs(store_1["a"]["b"]["c"]["d"]["e"]["f"], created[1])
+
+
+class LookupDbrefTest(TestCase):
+    """Verify api.wb_lookup_dbref translates the identity pair to a dbref string.
+
+    Mocks the internal _query_object_ids helper so the test exercises
+    wb_lookup_dbref's branching (no match / one match / many matches) and
+    dbref formatting without standing up a database. The helper itself
+    is a thin Django ORM call — covered by integration tests, not here.
+    """
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_no_match_returns_none(self, mock_query):
+        mock_query.return_value = []
+        self.assertIsNone(wb_lookup_dbref("millholm/forest.yaml", 1))
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_single_match_returns_hash_dbref(self, mock_query):
+        mock_query.return_value = [42]
+        self.assertEqual(wb_lookup_dbref("millholm/forest.yaml", 1), "#42")
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_multi_match_raises_api_error(self, mock_query):
+        mock_query.return_value = [42, 43]
+        with self.assertRaises(ApiError) as ctx:
+            wb_lookup_dbref("millholm/forest.yaml", 1)
+        msg = str(ctx.exception)
+        self.assertIn("multiple objects match", msg)
+        self.assertIn("'millholm/forest.yaml'", msg)
+        self.assertIn("deployment_id=1", msg)
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_passes_identity_pair_through_to_query(self, mock_query):
+        mock_query.return_value = []
+        wb_lookup_dbref("aethenveil.yaml", 7)
+        mock_query.assert_called_once_with("aethenveil.yaml", 7)
+
+
+class LookupObjectTest(TestCase):
+    """Verify api.wb_lookup_object resolves the identity pair to a typeclass instance.
+
+    Mocks the internal ``_query_object_ids`` helper (same as
+    LookupDbrefTest) plus ``ObjectDB.objects.get`` so the test
+    exercises wb_lookup_object's branching (no match / one match / many
+    matches) and the indexed-id-to-typeclass step without standing up
+    a database.
+    """
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_no_match_returns_none(self, mock_query):
+        mock_query.return_value = []
+        self.assertIsNone(wb_lookup_object("millholm/forest.yaml", 1))
+
+    @patch("evennia.objects.models.ObjectDB.objects.get")
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_single_match_returns_object(self, mock_query, mock_get):
+        mock_query.return_value = [42]
+        sentinel = MagicMock()
+        mock_get.return_value = sentinel
+        self.assertIs(wb_lookup_object("millholm/forest.yaml", 1), sentinel)
+        mock_get.assert_called_once_with(pk=42)
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_multi_match_raises_api_error(self, mock_query):
+        mock_query.return_value = [42, 43]
+        with self.assertRaises(ApiError) as ctx:
+            wb_lookup_object("millholm/forest.yaml", 1)
+        msg = str(ctx.exception)
+        self.assertIn("multiple objects match", msg)
+        self.assertIn("'millholm/forest.yaml'", msg)
+        self.assertIn("deployment_id=1", msg)
+
+    @patch("evennia_world_builder.api._query_object_ids")
+    def test_passes_identity_pair_through_to_query(self, mock_query):
+        mock_query.return_value = []
+        wb_lookup_object("aethenveil.yaml", 7)
+        mock_query.assert_called_once_with("aethenveil.yaml", 7)

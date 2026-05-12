@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """evennia-world-builder — declarative YAML-driven world authoring for Evennia."""
 
+from .api import wb_lookup_dbref, wb_lookup_object
 from .builder import Builder
 from .config import get_configured_reader, get_reader_class
 from .definitions import Definitions
 from .errors import (
+    ApiError,
     BuilderError,
     DefinitionsError,
     FinderError,
@@ -59,4 +61,7 @@ __all__ = [
     "ValidatorError",
     "Builder",
     "BuilderError",
+    "wb_lookup_dbref",
+    "wb_lookup_object",
+    "ApiError",
 ]

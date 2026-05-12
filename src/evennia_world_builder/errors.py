@@ -70,3 +70,13 @@ class ValidatorError(Exception):
 
 class BuilderError(Exception):
     """Base class for Builder failures."""
+
+
+class ApiError(Exception):
+    """Raised by ``api.py`` runtime-lookup helpers on integrity failures.
+
+    Used only for conditions that should be impossible if the Builder's
+    cleanup-on-rebuild invariant has held — e.g. multiple objects
+    sharing the same ``(deployment_file, deployment_id)`` pair. A
+    successful no-match returns ``None`` rather than raising.
+    """

@@ -19,6 +19,7 @@ Map of all design documents in this directory, organised by category. Add new do
 - **[validation-gating.md](validation-gating.md)** — when `wb_build` pre-validates the whole repo vs trusts the consumer's CI gate. Four-way decision matrix (`repo-ci-pre-validation` setting × `--force-validate` flag), three-tier cross-reference correctness model, why the library never verifies gating itself.
 - **[cli.md](cli.md)** — standalone console-script CLIs (`wb-validate`); `--reader` dispatch, exit-code semantics, and how this tier coexists with the in-game commands.
 - **[library-commands.md](library-commands.md)** — conventions for library-shipped admin commands (`wb_` prefix, superuser lock, AppConfig auto-install into AccountCmdSet) and current commands (`wb_build`).
+- **[runtime-lookups.md](runtime-lookups.md)** — `api` module helpers for consumer game code (`wb_lookup_dbref`, `wb_lookup_object`): translating the stable `(deployment_file, deployment_id)` pair to an Evennia dbref or object at runtime, indexed two-tag query, naming convention.
 
 ## Archive
 
