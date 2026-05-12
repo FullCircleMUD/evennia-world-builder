@@ -123,4 +123,12 @@ def validate(argv: list[str] | None = None) -> int:
 
 def _validate_main() -> None:
     """Console-script shim: forward sys.argv and propagate exit code."""
+    # Windows default stdout/stderr inherit the legacy ANSI codepage
+    # (e.g. cp1252), which crashes on non-ASCII glyphs like the U+2192
+    # arrow in our --help text. macOS/Linux are already UTF-8, so this
+    # reconfigure is a no-op there.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     sys.exit(validate(sys.argv[1:]))
