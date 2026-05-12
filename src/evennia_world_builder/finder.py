@@ -6,9 +6,10 @@ See DESIGN/discovery-and-loading.md for the design.
 """
 from dataclasses import dataclass
 
+from evennia_yaml_reader import Reader, ReaderNotFoundError
+
 from .definitions import Definitions
-from .errors import FinderManifestError, FinderQueryError, ReaderNotFoundError
-from .readers.base import Reader
+from .errors import FinderManifestError, FinderQueryError
 
 
 _INDEX_FILENAME = "index.yaml"

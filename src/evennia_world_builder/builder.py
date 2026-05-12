@@ -4,10 +4,11 @@ import ast
 
 from django.core.exceptions import ObjectDoesNotExist
 
+from evennia_yaml_reader import Reader
+
 from .definitions import Definitions
 from .errors import BuilderError
 from .loader import LoadedEntity
-from .readers.base import Reader
 
 
 # Reserved tag categories — keep in sync with validator's `wb_*` prefix check.

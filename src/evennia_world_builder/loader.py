@@ -10,15 +10,15 @@ ordering of operations by ordering entries in their indexes.
 """
 from dataclasses import dataclass, field
 
+from evennia_yaml_reader import Reader, ReaderNotFoundError
+
 from .definitions import Definitions
 from .errors import (
     LoaderInvalidShapeError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
-    ReaderNotFoundError,
 )
 from .finder import FoundLocation
-from .readers.base import Reader
 
 
 _INDEX_FILENAME = "index.yaml"

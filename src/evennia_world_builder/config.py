@@ -5,16 +5,16 @@ import importlib
 from django.conf import settings
 
 
-DEFAULT_READER = "evennia_world_builder.readers.github.GitHubReader"
+DEFAULT_READER = "evennia_yaml_reader.github.GitHubReader"
 
 
 def get_reader_class():
     """Resolve the WORLDBUILDER_READER setting (dotted path) to a class.
 
     The setting value is a Python dotted path (e.g.
-    ``"evennia_world_builder.GitHubReader"`` or
+    ``"evennia_yaml_reader.GitHubReader"`` or
     ``"my_consumer.readers.MyReader"``). Defaults to
-    ``evennia_world_builder.GitHubReader``.
+    ``evennia_yaml_reader.github.GitHubReader``.
 
     Construction is the consumer's responsibility — this function
     returns the class only. Reader kwargs are reader-specific and

@@ -12,7 +12,7 @@ evennia-world-builder ships admin commands that auto-install into any consumer g
 ## Configuration the consumer supplies
 
 - **`INSTALLED_APPS`** must include `"evennia_world_builder"`. Without this, AppConfig.ready() never runs and no commands are installed.
-- **`WORLDBUILDER_READER`** (optional) — dotted path to a Reader class. Defaults to `"evennia_world_builder.readers.github.GitHubReader"`.
+- **`WORLDBUILDER_READER`** (optional) — dotted path to a Reader class. Defaults to `"evennia_yaml_reader.github.GitHubReader"`.
 - **`WORLDBUILDER_READER_KWARGS`** — dict of kwargs the chosen Reader's `__init__` requires. The library forwards them verbatim, so the consumer fully controls reader-specific configuration. Example for `GitHubReader`:
 
   ```python

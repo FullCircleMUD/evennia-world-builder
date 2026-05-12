@@ -1,6 +1,18 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """evennia-world-builder — declarative YAML-driven world authoring for Evennia."""
 
+from evennia_yaml_reader import (
+    GitHubReader,
+    LocalReader,
+    Reader,
+    ReaderAuthError,
+    ReaderError,
+    ReaderNetworkError,
+    ReaderNotFoundError,
+    ReaderParseError,
+    ReaderResult,
+)
+
 from .api import wb_lookup_dbref, wb_lookup_object
 from .builder import Builder
 from .config import get_configured_reader, get_reader_class
@@ -16,16 +28,10 @@ from .errors import (
     LoaderInvalidShapeError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
-    ReaderAuthError,
-    ReaderError,
-    ReaderNetworkError,
-    ReaderNotFoundError,
-    ReaderParseError,
     ValidatorError,
 )
 from .finder import Finder, FoundLocation
 from .loader import LoadedEntity, Loader, LoadResult
-from .readers import GitHubReader, LocalReader, Reader, ReaderResult
 from .validator import Validator
 
 __version__ = "0.0.1"

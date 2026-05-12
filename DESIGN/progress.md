@@ -2,7 +2,19 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
-## 2026-05-09 (latest)
+## 2026-05-12 (latest)
+
+- **Reader extracted to `evennia-yaml-reader`.** The `Reader` contract, `GitHubReader`, `LocalReader`, and the typed exception hierarchy (`ReaderError` + four subtypes) moved into the new [evennia-yaml-reader](https://github.com/FullCircleMUD/evennia-yaml-reader) sibling library. World-builder now depends on it via `pyproject.toml` and re-exports the classes from its top-level `__init__` so consumer imports (`from evennia_world_builder import GitHubReader`, …) keep working without change.
+
+  Why now: a second declarative-content library ([evennia-mob-spawner](https://github.com/FullCircleMUD/evennia-mob-spawner)) needs the same Reader infrastructure, and more declarative-content libraries are anticipated (quests, recipes, …). At three or more consumers, the library overhead amortises and a single source-of-truth becomes the cheaper option than duplicating ~200 lines per consumer.
+
+  Changes in this repo: deleted `src/evennia_world_builder/readers/`, dropped the five Reader exception classes from `errors.py`, swapped `.readers.base` and `.errors` Reader imports across `builder.py` / `cli.py` / `commands.py` / `definitions.py` / `finder.py` / `loader.py` / `__init__.py` to import from `evennia_yaml_reader`, flipped `DEFAULT_READER` in `config.py` to `"evennia_yaml_reader.github.GitHubReader"`. Tests: `GitHubReaderTest` and `LocalReaderTest` moved to the new library; `GetReaderClassTest` (which verifies world-builder's dispatch layer) stayed. **378 tests green**.
+
+  Doc updates: `DESIGN/reader-api.md` rewritten as a short pointer to the new library's contract doc plus a "what stays in world-builder" section covering settings dispatch (`WORLDBUILDER_READER` / `WORLDBUILDER_READER_KWARGS` and the `get_reader_class` / `get_configured_reader` helpers). `DESIGN/INDEX.md` and `DESIGN/library-commands.md` updated to match.
+
+## 2026-05-09
+
+- **Per-entity `home:` field — shipped.** Optional per-entity YAML field that controls the Evennia `home` reference set on the new object. Faithfully exposes Evennia's `create_object`'s `home=`/`nohome=` surface. Three valid forms: absent (defaults to `settings.DEFAULT_HOME`), `null` (translates to `nohome=True`, object's `home` becomes `None`), or a `{deployment_file, deployment_id}` cross-ref dict (resolves to a target entity). 347 unit tests green (327 → 347, +20 across four steps). The motivating case is fixtures whose home should be unset (avoiding stray Limbo-bound artefacts), but the more load-bearing real-world case is objects with a meaningful home elsewhere — NPCs that retreat to a quarters room at night, quest items that auto-return to a giver, characters whose login destination is a particular dwelling.
 
 - **Per-entity `home:` field — shipped.** Optional per-entity YAML field that controls the Evennia `home` reference set on the new object. Faithfully exposes Evennia's `create_object`'s `home=`/`nohome=` surface. Three valid forms: absent (defaults to `settings.DEFAULT_HOME`), `null` (translates to `nohome=True`, object's `home` becomes `None`), or a `{deployment_file, deployment_id}` cross-ref dict (resolves to a target entity). 347 unit tests green (327 → 347, +20 across four steps). The motivating case is fixtures whose home should be unset (avoiding stray Limbo-bound artefacts), but the more load-bearing real-world case is objects with a meaningful home elsewhere — NPCs that retreat to a quarters room at night, quest items that auto-return to a giver, characters whose login destination is a particular dwelling.
 

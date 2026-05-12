@@ -8,8 +8,9 @@ definitions.yaml over time, they become typed fields on this class.
 """
 from dataclasses import dataclass
 
+from evennia_yaml_reader import Reader
+
 from .errors import DefinitionsError
-from .readers.base import Reader
 
 
 _DEFINITIONS_PATH = "definitions.yaml"

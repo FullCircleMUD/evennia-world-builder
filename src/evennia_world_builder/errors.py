@@ -1,25 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Exception types raised by world-builder readers."""
+"""Exception types raised by world-builder.
 
-
-class ReaderError(Exception):
-    """Base class for world-builder reader failures."""
-
-
-class ReaderAuthError(ReaderError):
-    """Reader rejected by source authentication (e.g. HTTP 401)."""
-
-
-class ReaderNotFoundError(ReaderError):
-    """Reader target does not exist at source (e.g. HTTP 404)."""
-
-
-class ReaderNetworkError(ReaderError):
-    """Reader could not reach source (DNS, timeout, refused, other HTTP)."""
-
-
-class ReaderParseError(ReaderError):
-    """Source content fetched but could not be parsed (YAML or UTF-8 decode failure)."""
+The Reader-related exceptions (``ReaderError`` and its four subtypes) live in
+the ``evennia-yaml-reader`` library — world-builder re-exports them from its
+top-level ``__init__`` for consumer convenience but they are imported there,
+not declared here.
+"""
 
 
 class DefinitionsError(Exception):

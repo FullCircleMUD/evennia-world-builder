@@ -19,6 +19,8 @@ DESIGN/validation-gating.md.
 from evennia.commands.command import Command as BaseCommand
 from evennia.utils.utils import run_async
 
+from evennia_yaml_reader import ReaderError
+
 from .builder import Builder
 from .config import get_configured_reader
 from .definitions import Definitions
@@ -29,7 +31,6 @@ from .errors import (
     FinderQueryError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
-    ReaderError,
     ValidatorError,
 )
 from .finder import Finder

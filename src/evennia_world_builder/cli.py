@@ -16,17 +16,17 @@ Currently shipped:
 import argparse
 import sys
 
+from evennia_yaml_reader import LocalReader, ReaderError
+
 from .definitions import Definitions
 from .errors import (
     DefinitionsError,
     FinderError,
     LoaderError,
-    ReaderError,
     ValidatorError,
 )
 from .finder import Finder
 from .loader import Loader
-from .readers import LocalReader
 from .validator import Validator
 
 
