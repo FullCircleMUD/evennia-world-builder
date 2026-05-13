@@ -35,6 +35,7 @@ from .errors import (
 )
 from .finder import Finder
 from .loader import Loader
+from .log import wb_log
 from .validator import Validator
 
 
@@ -134,6 +135,12 @@ def _run_validator(
     except ValidatorError as e:
         messages.extend(validator.messages)
         messages.append(f"wb_build: refusing to build — {refusal_label}: {e}")
+        wb_log(
+            f"wb_build: validation refused — {refusal_label}: {e}",
+            level="ERROR",
+        )
+        for finding in validator.messages:
+            wb_log(f"  validator: {finding}", level="INFO")
         return False
     # On success: do not flush validator.messages (the success-path
     # messages are diagnostic noise for the operator). Failures still
@@ -226,28 +233,45 @@ class CmdWBBuild(BaseCommand):
         """
         messages: list = []
 
+        scope_desc = "all" if not query else " ".join(
+            f"{k}={v}" for k, v in query.items()
+        )
+        flag_desc = " ".join(f"--{f}" for f in sorted(flags)) if flags else ""
+        wb_log(
+            f"wb_build started: scope={scope_desc}"
+            + (f" {flag_desc}" if flag_desc else "")
+        )
+
         try:
             reader = get_configured_reader()
         except Exception as e:
-            messages.append(
+            msg = (
                 f"wb_build: could not construct reader "
                 f"(check WORLDBUILDER_READER and WORLDBUILDER_READER_KWARGS): {e}"
             )
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
             return messages
 
         try:
             definitions = Definitions.from_reader(reader)
         except ReaderError as e:
-            messages.append(f"wb_build: could not load definitions.yaml: {e}")
+            msg = f"wb_build: could not load definitions.yaml: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
             return messages
         except DefinitionsError as e:
-            messages.append(f"wb_build: definitions.yaml is malformed: {e}")
+            msg = f"wb_build: definitions.yaml is malformed: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
             return messages
 
         try:
             definitions.validate_query(query)
         except DefinitionsError as e:
-            messages.append(f"wb_build: {e}")
+            msg = f"wb_build: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
             return messages
 
         finder = Finder(reader, definitions)
@@ -261,18 +285,28 @@ class CmdWBBuild(BaseCommand):
         should_pre_validate = (not definitions.repo_ci_pre_validation) or force_validate
 
         messages.append("wb_build: starting validation")
+        wb_log(
+            "wb_build: validation started "
+            f"({'pre-validate whole repo' if should_pre_validate else 'scope-only'})"
+        )
 
         if should_pre_validate:
             try:
                 load_result = loader.load(finder.find())
             except FinderManifestError as e:
-                messages.append(f"wb_build: manifest error during pre-validation: {e}")
+                msg = f"wb_build: manifest error during pre-validation: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
             except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                messages.append(f"wb_build: pre-validation load failed: {e}")
+                msg = f"wb_build: pre-validation load failed: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
             except ReaderError as e:
-                messages.append(f"wb_build: read error during pre-validation: {e}")
+                msg = f"wb_build: read error during pre-validation: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
 
             all_entities = load_result.entities
@@ -290,19 +324,27 @@ class CmdWBBuild(BaseCommand):
             try:
                 found = finder.find(query)
             except FinderQueryError as e:
-                messages.append(f"wb_build: {e}")
+                msg = f"wb_build: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
             except FinderManifestError as e:
-                messages.append(f"wb_build: manifest error: {e}")
+                msg = f"wb_build: manifest error: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
 
             try:
                 load_result = loader.load(found)
             except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                messages.append(f"wb_build: {e}")
+                msg = f"wb_build: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
             except ReaderError as e:
-                messages.append(f"wb_build: read error during loading: {e}")
+                msg = f"wb_build: read error during loading: {e}"
+                messages.append(msg)
+                wb_log(msg, level="ERROR")
                 return messages
 
             entities = load_result.entities
@@ -317,6 +359,8 @@ class CmdWBBuild(BaseCommand):
 
         messages.append("wb_build: validation complete")
         messages.append("wb_build: starting building")
+        wb_log(f"wb_build: validation complete ({len(entities)} entities in scope)")
+        wb_log("wb_build: build started")
 
         builder = Builder(
             definitions,
@@ -326,7 +370,9 @@ class CmdWBBuild(BaseCommand):
         try:
             created = builder.build(entities)
         except BuilderError as e:
-            messages.append(f"wb_build: build failed: {e}")
+            msg = f"wb_build: build failed: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
             return messages
 
         if builder.deleted_count:
@@ -339,6 +385,10 @@ class CmdWBBuild(BaseCommand):
         messages.append(
             f"wb_build: finished building "
             f"({len(created)} object{'' if len(created) == 1 else 's'})"
+        )
+        wb_log(
+            f"wb_build: build complete "
+            f"({len(created)} created, {builder.deleted_count} cleaned)"
         )
         return messages
 
@@ -354,8 +404,15 @@ class CmdWBBuild(BaseCommand):
         comes back through ``_on_async_return``. This handler only
         fires for exceptions that escape the pipeline (e.g. a Loader
         bug, a programming error). The Twisted ``Failure`` carries the
-        traceback for log inspection; the operator gets a single line.
+        traceback; the full text goes to world-builder.log so a later
+        operator can read it, the operator at the prompt gets a single
+        line.
         """
+        wb_log(
+            f"wb_build: unexpected error during async build: "
+            f"{failure.getErrorMessage()}\n{failure.getTraceback()}",
+            level="ERROR",
+        )
         self.caller.msg(
             f"wb_build: unexpected error during async build: "
             f"{failure.getErrorMessage()}"

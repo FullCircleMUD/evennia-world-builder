@@ -5187,3 +5187,86 @@ class LookupObjectTest(TestCase):
         mock_query.return_value = []
         wb_lookup_object("aethenveil.yaml", 7)
         mock_query.assert_called_once_with("aethenveil.yaml", 7)
+
+
+class WBLogTest(TestCase):
+    """Verify the wb_log shim — see DESIGN/logging.md.
+
+    The shim is thin by design (lazy import + format + delegate to
+    evennia.utils.logger.log_file). Tests assert the format contract
+    every call site relies on: filename, level prefix, ISO timestamp,
+    silent no-op when the engine isn't bootstrapped.
+    """
+
+    @patch("evennia.utils.logger.log_file")
+    def test_default_level_is_info(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("hello")
+        line, kwargs = mock_log_file.call_args.args[0], mock_log_file.call_args.kwargs
+        self.assertIn("[INFO]", line)
+        self.assertEqual(kwargs["filename"], "world-builder.log")
+
+    @patch("evennia.utils.logger.log_file")
+    def test_explicit_warn_level(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("careful", level="WARN")
+        self.assertIn("[WARN]", mock_log_file.call_args.args[0])
+
+    @patch("evennia.utils.logger.log_file")
+    def test_explicit_error_level(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("boom", level="ERROR")
+        self.assertIn("[ERROR]", mock_log_file.call_args.args[0])
+
+    @patch("evennia.utils.logger.log_file")
+    def test_unknown_level_coerced_to_info(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("noisy", level="DEBUG")
+        line = mock_log_file.call_args.args[0]
+        self.assertIn("[INFO]", line)
+        self.assertNotIn("[DEBUG]", line)
+
+    @patch("evennia.utils.logger.log_file")
+    def test_message_body_present(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("wb_build: starting validation")
+        self.assertIn(
+            "wb_build: starting validation", mock_log_file.call_args.args[0]
+        )
+
+    @patch("evennia.utils.logger.log_file")
+    def test_line_starts_with_iso_timestamp(self, mock_log_file):
+        import re
+
+        from evennia_world_builder.log import wb_log
+
+        wb_log("anything")
+        line = mock_log_file.call_args.args[0]
+        # ISO-8601 with seconds, timezone-aware (UTC offset or 'Z').
+        self.assertRegex(line, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+    @patch("evennia.utils.logger.log_file")
+    def test_filename_is_hardcoded(self, mock_log_file):
+        from evennia_world_builder.log import wb_log
+
+        wb_log("a")
+        wb_log("b", level="ERROR")
+        for call in mock_log_file.call_args_list:
+            self.assertEqual(call.kwargs["filename"], "world-builder.log")
+
+    def test_silent_noop_when_evennia_logger_unavailable(self):
+        """Simulates the wb-validate CLI path: evennia not importable.
+
+        Setting the module to None in sys.modules makes the next import
+        raise ImportError, which the shim swallows. The test passes if
+        no exception escapes — wb_log must never break its caller.
+        """
+        from evennia_world_builder.log import wb_log
+
+        with patch.dict("sys.modules", {"evennia.utils.logger": None}):
+            wb_log("anything")  # must not raise
