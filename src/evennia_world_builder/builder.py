@@ -9,11 +9,19 @@ from evennia_yaml_reader import Reader
 from .definitions import Definitions
 from .errors import BuilderError
 from .loader import LoadedEntity
+from .log import wb_log
 
 
 # Reserved tag categories — keep in sync with validator's `wb_*` prefix check.
 _TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
 _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
+
+# Per-entity post-apply hook — see DESIGN/post-build-hook.md. Consumer
+# typeclasses that need to derive state from YAML-supplied attributes
+# define this method; the Builder duck-type-invokes it after every
+# `_apply_*` step inside `_build_one`. Exceptions inside the hook are
+# logged via `wb_log` and do NOT abort the build.
+_WB_AT_POST_BUILD_ATTR = "wb_at_post_build"
 
 
 class Builder:
@@ -182,6 +190,12 @@ class Builder:
             raise BuilderError(
                 f"failed to apply tags for {entity.path!r}: {e}"
             ) from e
+
+        # Per-entity post-apply hook (see DESIGN/post-build-hook.md).
+        # Fires after every `_apply_*` step has run, so consumer
+        # typeclasses observe the YAML-supplied values, not the
+        # typeclass defaults that `at_object_creation` saw.
+        self._invoke_post_build_hook(obj, entity)
 
         return obj
 
@@ -593,6 +607,39 @@ class Builder:
         deployment_id = content.get("deployment_id")
         obj.tags.add(entity.path, category=_TAG_CATEGORY_DEPLOYMENT_FILE)
         obj.tags.add(str(deployment_id), category=_TAG_CATEGORY_DEPLOYMENT_ID)
+
+    def _invoke_post_build_hook(self, obj, entity: LoadedEntity) -> None:
+        """Invoke ``obj.wb_at_post_build()`` if the typeclass defines it.
+
+        Duck-typed and opt-in — typeclasses without the method get a
+        silent no-op. The hook fires once per entity, at the end of
+        ``_build_one``, after every ``_apply_*`` step has run. By that
+        point all YAML-supplied attributes, tags, locks, and aliases
+        are in place on the object, so the hook observes final values
+        rather than the typeclass defaults that ``at_object_creation``
+        saw.
+
+        Exceptions inside the hook are caught and logged to
+        ``world-builder.log`` via ``wb_log``; the entity remains built
+        and the build pass continues. Consumer hook bugs must not be
+        able to turn a successful apply into "no partial state" abort.
+
+        See DESIGN/post-build-hook.md for the contract, the comparison
+        to ``evennia-mob-spawner``'s ``ms_at_post_spawn``, and what is
+        deliberately not included.
+        """
+        hook = getattr(obj, _WB_AT_POST_BUILD_ATTR, None)
+        if not callable(hook):
+            return
+        try:
+            hook()
+        except Exception as e:
+            wb_log(
+                f"{type(obj).__name__}.{_WB_AT_POST_BUILD_ATTR}() raised "
+                f"on {entity.path!r} deployment_id="
+                f"{entity.content.get('deployment_id') if isinstance(entity.content, dict) else '?'}: {e}",
+                level="ERROR",
+            )
 
 
 def _normalise_tag(tag) -> tuple[str, str | None]:

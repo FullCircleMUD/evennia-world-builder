@@ -13,14 +13,17 @@ The Builder is the **only component in the pipeline that mutates the consumer's 
 ```python
 _TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
 _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
+_WB_AT_POST_BUILD_ATTR = "wb_at_post_build"
 ```
 
-The tag categories the Builder writes onto every created object as the **deployment-identity pair** — see [DESIGN/deployment-identity.md](../../DESIGN/deployment-identity.md) for the load-bearing identity contract. These two values are the durable handle by which:
+The two tag categories are the **deployment-identity pair** the Builder writes onto every created object — see [DESIGN/deployment-identity.md](../../DESIGN/deployment-identity.md) for the load-bearing identity contract. These two values are the durable handle by which:
 
 - Cleanup finds existing objects to delete on rebuild (`search_tag(key=path, category="wb_deployment_file")`).
 - Cross-file cross-references (spike 4) will look up parents already in the DB from a previous invocation.
 
 **Synchronisation requirement:** the `wb_*` prefix is reserved by the library and the Validator's `_check_tags_no_reserved_category` predicate refuses any author tag in that namespace. Adding a new `wb_*` category here without a corresponding update to the validator's reserved-prefix check would let an author tag collide with a Builder-set tag silently.
+
+`_WB_AT_POST_BUILD_ATTR` names the consumer-typeclass method the Builder duck-type-invokes at the end of `_build_one` (see `_invoke_post_build_hook` below). Hook design: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
 
 ---
 
@@ -109,10 +112,12 @@ The partition is determined by `"destination" in content` — the same signal th
 #### Per-entity construction order
 
 ```
-_resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → [translate home: → home= or nohome=True] → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags
+_resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → [translate home: → home= or nohome=True] → create_object → _apply_aliases → _apply_locks → _apply_attributes → _apply_tags → _invoke_post_build_hook
 ```
 
 `create_object` triggers the typeclass's `at_object_creation()` hook, which can set its own default attributes (e.g. `self.db.room_type = "bakery"`). Any subsequent `_apply_*` call overwrites those defaults if the YAML declares the same key. **Contract: typeclass declares defaults; YAML overrides per-instance.**
+
+`_invoke_post_build_hook` is the final per-entity step: a duck-typed, opt-in call to `obj.wb_at_post_build()` if the typeclass defines it. By the time this fires, every `_apply_*` has run, so consumer typeclasses that need to derive state from the YAML-supplied values (rather than the defaults Evennia's `at_object_creation` saw) get a documented seam. Hook design and rationale: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
 
 #### Field expectations
 
@@ -262,6 +267,32 @@ Two passes:
    - `obj.tags.add(str(deployment_id), category="wb_deployment_id")`
 
 The `wb_*` category prefix is reserved for library-controlled tags; the Validator's `_check_tags_no_reserved_category` predicate rejects any author tag using a `wb_*` category, so the auto-set pair can't collide. The author-tags-first ordering keeps the auto-set pair as the last word about identity.
+
+### `_invoke_post_build_hook(obj, entity)`
+
+```python
+def _invoke_post_build_hook(self, obj, entity: LoadedEntity) -> None
+```
+
+Final step of `_build_one`. Duck-type-invokes `obj.wb_at_post_build()` if the typeclass defines that method; absent or non-callable, silent no-op.
+
+```python
+hook = getattr(obj, _WB_AT_POST_BUILD_ATTR, None)
+if not callable(hook):
+    return
+try:
+    hook()
+except Exception as e:
+    wb_log(f"{type(obj).__name__}.{_WB_AT_POST_BUILD_ATTR}() raised ...", level="ERROR")
+```
+
+Three properties to note:
+
+- **Duck-typed and opt-in.** Consumer typeclasses that need post-apply derivation declare the method; everything else continues to work unchanged. No base class, no protocol. Preserves CLAUDE.md principle 1 — "the library does not own game concepts."
+- **Fires per-entity in passes 1+2, not after pass 3+4.** Symmetric with `evennia-mob-spawner`'s `ms_at_post_spawn`. Consumer typeclasses that needed to read link-resolved attributes (assigned in pass 4) would not see them through this hook. None of the current consumers need this; if a future case appears, a second hook with post-pass-4 timing is straightforward to add.
+- **Exception isolation.** Hook failures are logged via `wb_log` at `ERROR` level and the entity remains built. Consumer hook bugs cannot turn a successful apply into a `BuilderError` abort. This is a deliberate departure from the "no partial state" Builder rule because the alternative — failing the build over a consumer-side bug — would be more brittle.
+
+Full contract, rationale, and comparison to `ms_at_post_spawn`: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
 
 ---
 

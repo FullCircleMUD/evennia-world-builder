@@ -2,7 +2,17 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
-## 2026-05-12 (latest)
+## 2026-05-18 (latest)
+
+- **`wb_at_post_build` hook shipped — per-entity, duck-typed, opt-in.** New consumer-typeclass seam for state derivation after every YAML attribute/tag/lock/alias has been applied. `Builder._build_one` calls `obj.wb_at_post_build()` if the typeclass defines it; absent, silent no-op. Exceptions logged via `wb_log` at `ERROR` and the build continues — consumer hook bugs can't turn a successful apply into a partial-state abort. Mirrors `evennia-mob-spawner`'s `ms_at_post_spawn` (decision #23 over there) — same shape, same opt-in mechanism, same exception isolation. **390 unit tests green** (386 → 390, +4 in new `TestPostBuildHook`).
+
+  Why now: surfaced by FCM-side `RoomHarvesting` and the `durability` mixin both relying on Evennia's `at_object_post_creation` contract ("fires after `attributes=` kwarg lands") to derive state from YAML-supplied scalars. The Builder passes only `desc` via that kwarg and writes every other YAML attribute via `obj.attributes.add(...)` afterwards, so Evennia's hook sees typeclass defaults rather than YAML values — `RoomHarvesting.spawn_resources_max` was being locked in as `{1: 10}` for every harvest room regardless of the room's authored `resource_id`. The fix is not to align with Evennia's hook timing (which would require hoisting every YAML attribute into the `attributes=` kwarg and changing what the library knows about Evennia's create-time semantics) but to expose a library-side seam that fires after the library's own apply pipeline — same answer mob-spawner converged on.
+
+  Design doc: [post-build-hook.md](post-build-hook.md). Implementation reference: [src/evennia_world_builder/builder.md](../src/evennia_world_builder/builder.md). Builder-level rationale captured in [builder.md](builder.md) principle 3.
+
+  Consumer-side migration (FCM `RoomHarvesting.at_object_post_creation` body → `wb_at_post_build`, `durability.py` mixin same) is a follow-up plan on the consumer side; nothing in this library blocks it.
+
+## 2026-05-12
 
 - **Reader extracted to `evennia-yaml-reader`.** The `Reader` contract, `GitHubReader`, `LocalReader`, and the typed exception hierarchy (`ReaderError` + four subtypes) moved into the new [evennia-yaml-reader](https://github.com/FullCircleMUD/evennia-yaml-reader) sibling library. World-builder now depends on it via `pyproject.toml` and re-exports the classes from its top-level `__init__` so consumer imports (`from evennia_world_builder import GitHubReader`, …) keep working without change.
 

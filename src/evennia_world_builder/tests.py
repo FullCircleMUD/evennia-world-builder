@@ -5270,3 +5270,135 @@ class WBLogTest(TestCase):
 
         with patch.dict("sys.modules", {"evennia.utils.logger": None}):
             wb_log("anything")  # must not raise
+
+
+class TestPostBuildHook(TestCase):
+    """Builder invokes ``wb_at_post_build`` on the typeclass post-apply.
+
+    Covers the duck-typed, opt-in, exception-isolated contract from
+    DESIGN/post-build-hook.md. The hook lets consumer typeclasses
+    derive state from the YAML-supplied attribute values instead of
+    the typeclass defaults that Evennia's ``at_object_creation`` sees.
+    """
+
+    def _entity(self, *, path="x.yaml", deployment_id=1, attributes=None):
+        content = {
+            "deployment_id": deployment_id,
+            "name": "X",
+            "typeclass": "ev.X",
+            "location": None,
+        }
+        if attributes is not None:
+            content["attributes"] = attributes
+        return LoadedEntity(
+            location={}, content=content, path=path, is_nested=False,
+        )
+
+    def _builder(self):
+        return Builder(Definitions(levels=("zone",)))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_hook_sees_yaml_supplied_attributes(self, mock_create, _mock_search):
+        """The hook reads attributes the Builder has already applied.
+
+        This is the regression-proof for the harvest-room bug class:
+        when the hook runs, every YAML ``attributes:`` entry must
+        already have been written via ``obj.attributes.add(...)``.
+        """
+        applied = {}
+        recorded_at_hook_time = {}
+
+        def make_obj(**_kw):
+            obj = MagicMock()
+            obj.attributes.add.side_effect = (
+                lambda key, value, category=None: applied.update({key: value})
+            )
+
+            def hook():
+                recorded_at_hook_time.update(applied)
+            obj.wb_at_post_build = hook
+            return obj
+
+        mock_create.side_effect = make_obj
+
+        entity = self._entity(attributes=[
+            {"key": "resource_id", "value": 19},
+            {"key": "resource_count_max", "value": 5},
+        ])
+        b = self._builder()
+        b.build([entity])
+
+        self.assertEqual(
+            recorded_at_hook_time,
+            {"resource_id": 19, "resource_count_max": 5},
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_typeclass_without_hook_builds_normally(self, mock_create, _mock_search):
+        """Builder proceeds when the typeclass has no ``wb_at_post_build``.
+
+        ``spec=`` restricts attribute access so ``getattr(obj,
+        "wb_at_post_build", None)`` returns ``None``, exercising the
+        opt-in path.
+        """
+        obj = MagicMock(spec=["attributes", "tags", "locks", "aliases"])
+        mock_create.return_value = obj
+
+        b = self._builder()
+        result = b.build([self._entity()])
+
+        self.assertEqual(len(result), 1)
+        # The Builder's _apply_* helpers still ran on the spec'd mock.
+        # _apply_tags writes the deployment_file + deployment_id tags
+        # unconditionally, so tags.add was definitely invoked.
+        self.assertTrue(obj.tags.add.called)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_hook_exception_does_not_abort_build(self, mock_create, _mock_search):
+        """A raising hook is logged but the entity stays built; further entities build too."""
+        # First entity's hook raises; second entity has no hook. Both
+        # must end up in the build result.
+        first_obj = MagicMock()
+        first_obj.wb_at_post_build.side_effect = RuntimeError("boom")
+
+        second_obj = MagicMock(spec=["attributes", "tags", "locks", "aliases"])
+
+        objs = iter([first_obj, second_obj])
+        mock_create.side_effect = lambda **_kw: next(objs)
+
+        b = self._builder()
+        result = b.build([
+            self._entity(path="a.yaml", deployment_id=1),
+            self._entity(path="a.yaml", deployment_id=2),
+        ])
+
+        self.assertEqual(len(result), 2)
+        # Hook on the first entity was invoked once despite raising.
+        first_obj.wb_at_post_build.assert_called_once_with()
+
+    @patch("evennia_world_builder.builder.wb_log")
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_hook_exception_logged_via_wb_log(
+        self, mock_create, _mock_search, mock_log,
+    ):
+        """The exception message + entity identifying info reach wb_log at ERROR."""
+        obj = MagicMock()
+        obj.wb_at_post_build.side_effect = RuntimeError("kaboom")
+        mock_create.return_value = obj
+
+        b = self._builder()
+        b.build([self._entity(path="rooms/inn.yaml", deployment_id=7)])
+
+        # wb_log called once, at ERROR, message mentions hook + path + id + reason.
+        self.assertEqual(mock_log.call_count, 1)
+        args, kwargs = mock_log.call_args
+        msg = args[0]
+        self.assertIn("wb_at_post_build", msg)
+        self.assertIn("rooms/inn.yaml", msg)
+        self.assertIn("deployment_id=7", msg)
+        self.assertIn("kaboom", msg)
+        self.assertEqual(kwargs.get("level"), "ERROR")
