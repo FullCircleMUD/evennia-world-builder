@@ -64,7 +64,7 @@ The command echoes each pipeline stage (pre-validation reason, validator finding
 
 Flow:
 
-1. **Reactor thread.** `func()` parses args (immediate feedback for malformed input), prints `"wb_build: running async (gameplay continues)…"`, and hands the pipeline off via `run_async(self._run_pipeline, …, at_return=…, at_err=…)`.
+1. **Reactor thread.** `func()` parses args (immediate feedback for malformed input), echoes the invocation back as `"wb_build <args> : running async (gameplay continues)…"` so the operator sees exactly which scope they kicked off, and hands the pipeline off via `run_async(self._run_pipeline, …, at_return=…, at_err=…)`.
 2. **Worker thread.** `_run_pipeline` runs the full Reader → Definitions → Finder → Loader → Validator → Builder chain. Operator-facing output is collected into a list of strings (no `caller.msg()` calls — caller pipes are reactor-only). Pipeline-level errors append to the messages list and return normally; only unexpected exceptions bubble out for `at_err`.
 3. **Reactor thread (callback).** `_on_async_return` flushes every message via `self.caller.msg()`. `_on_async_err` handles unexpected pipeline exceptions with a one-line summary; the traceback stays in the server log.
 

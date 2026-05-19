@@ -214,7 +214,7 @@ class CmdWBBuild(BaseCommand):
         # be called from the worker safely; the at_return / at_err
         # callbacks fire back on the reactor and flush the collected
         # message list there.
-        self.caller.msg("wb_build: running async (gameplay continues)…")
+        self.caller.msg(f"wb_build {args} : running async (gameplay continues)…")
         run_async(
             self._run_pipeline, query, flags,
             at_return=self._on_async_return,
