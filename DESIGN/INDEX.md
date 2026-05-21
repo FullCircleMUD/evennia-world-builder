@@ -22,6 +22,7 @@ Map of all design documents in this directory, organised by category. Add new do
 - **[library-commands.md](library-commands.md)** — conventions for library-shipped admin commands (`wb_` prefix, superuser lock, AppConfig auto-install into AccountCmdSet) and current commands (`wb_build`).
 - **[runtime-lookups.md](runtime-lookups.md)** — `api` module helpers for consumer game code (`wb_lookup_dbref`, `wb_lookup_object`): translating the stable `(deployment_file, deployment_id)` pair to an Evennia dbref or object at runtime, indexed two-tag query, naming convention.
 - **[logging.md](logging.md)** — dedicated `world-builder.log` co-located with Evennia logs, via `evennia.utils.logger.log_file()`. `wb_log` shim with ISO-timestamp + level format; silent no-op outside Evennia (CLI path). Hardcoded filename, no rotation/structured logging/Python `logging` integration.
+- **[shards-compatibility.md](shards-compatibility.md)** — how `wb_build` plays nice with `evennia-shards` (the rooms it builds get correctly stamped under multi-tenant deployments) without making shards a hard dependency. Optional import + `preserve_tenant_context` wrap around the `run_async` dispatch.
 
 ## Archive
 
