@@ -21,6 +21,20 @@ from evennia.utils.utils import run_async
 
 from evennia_yaml_reader import ReaderError
 
+# Optional integration with evennia-shards. When the shards library is
+# installed and configured, ``preserve_tenant_context`` captures the
+# active tenant at wrap time and re-applies it inside the deferred
+# worker thread — without this, ObjectDB rows built in the worker
+# would land ``shard_id=NULL`` because multitenant's threading.local
+# tenant doesn't propagate across the ``run_async`` thread spawn. When
+# the shards library isn't installed, the import fails and we fall
+# back to an identity passthrough that's a no-op.
+try:
+    from evennia_shards import preserve_tenant_context
+except ImportError:
+    def preserve_tenant_context(fn):
+        return fn
+
 from .builder import Builder
 from .config import get_configured_reader
 from .definitions import Definitions
@@ -214,9 +228,15 @@ class CmdWBBuild(BaseCommand):
         # be called from the worker safely; the at_return / at_err
         # callbacks fire back on the reactor and flush the collected
         # message list there.
+        #
+        # The pipeline callable is wrapped with preserve_tenant_context
+        # so any shards-tenant active on the reactor thread carries
+        # into the worker — without it, every ObjectDB row built in
+        # the worker would land unstamped. No-op when shards isn't
+        # installed (see top-of-file import).
         self.caller.msg(f"wb_build {args} : running async (gameplay continues)…")
         run_async(
-            self._run_pipeline, query, flags,
+            preserve_tenant_context(self._run_pipeline), query, flags,
             at_return=self._on_async_return,
             at_err=self._on_async_err,
         )
