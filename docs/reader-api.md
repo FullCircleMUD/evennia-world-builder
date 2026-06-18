@@ -6,7 +6,7 @@ The Reader contract has moved.
 
 For the contract itself, see:
 
-- **[evennia-yaml-reader's DESIGN/reader-api.md](https://github.com/FullCircleMUD/evennia-yaml-reader/blob/main/DESIGN/reader-api.md)** — the architectural decisions behind the contract.
+- **[evennia-yaml-reader's docs/reader-api.md](https://github.com/FullCircleMUD/evennia-yaml-reader/blob/main/docs/reader-api.md)** — the architectural decisions behind the contract.
 - **[evennia-yaml-reader's base.md](https://github.com/FullCircleMUD/evennia-yaml-reader/blob/main/src/evennia_yaml_reader/base.md)** — the co-located reference for `Reader` and `ReaderResult`.
 
 ## What stays in world-builder

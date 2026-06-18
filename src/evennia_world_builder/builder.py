@@ -16,7 +16,7 @@ from .log import wb_log
 _TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
 _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 
-# Per-entity post-apply hook — see DESIGN/post-build-hook.md. Consumer
+# Per-entity post-apply hook — see docs/post-build-hook.md. Consumer
 # typeclasses that need to derive state from YAML-supplied attributes
 # define this method; the Builder duck-type-invokes it after every
 # `_apply_*` step inside `_build_one`. Exceptions inside the hook are
@@ -76,7 +76,7 @@ class Builder:
         # Pass 4 — links: walk `links:` for files in scope and assign
         # each declared `entity.attribute = points_to`. Runs after pass 3
         # so the cache is fully warmed (own builds + DB-resolved cross-refs
-        # + incoming_exits restorations). See DESIGN/links.md.
+        # + incoming_exits restorations). See docs/links.md.
         self._run_pass_4(file_paths)
 
         return created
@@ -191,7 +191,7 @@ class Builder:
                 f"failed to apply tags for {entity.path!r}: {e}"
             ) from e
 
-        # Per-entity post-apply hook (see DESIGN/post-build-hook.md).
+        # Per-entity post-apply hook (see docs/post-build-hook.md).
         # Fires after every `_apply_*` step has run, so consumer
         # typeclasses observe the YAML-supplied values, not the
         # typeclass defaults that `at_object_creation` saw.
@@ -270,7 +270,7 @@ class Builder:
         targets DB-fall-through correctly. An unresolvable side raises
         ``BuilderError`` and refuses the build (no partial state).
 
-        See DESIGN/links.md for the design rationale.
+        See docs/links.md for the design rationale.
         """
         if not self.file_metadata:
             return
@@ -624,7 +624,7 @@ class Builder:
         and the build pass continues. Consumer hook bugs must not be
         able to turn a successful apply into "no partial state" abort.
 
-        See DESIGN/post-build-hook.md for the contract, the comparison
+        See docs/post-build-hook.md for the contract, the comparison
         to ``evennia-mob-spawner``'s ``ms_at_post_spawn``, and what is
         deliberately not included.
         """

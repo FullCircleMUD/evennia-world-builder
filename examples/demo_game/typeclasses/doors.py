@@ -9,7 +9,7 @@ blocked while the door is closed.
 
 The pairing itself is *not* in this code — it's done in YAML via
 ``links:`` on the relevant world content file. See
-DESIGN/links.md for the build pass that wires this up.
+docs/links.md for the build pass that wires this up.
 
 Intentionally minimal: no locking, smashing, hidden/invisible state,
 or auto-close timer. Those are FCM concerns. This typeclass is the

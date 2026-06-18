@@ -489,7 +489,7 @@ class LoaderTest(TestCase):
         # `home: null` in YAML is a per-entity field that the Loader
         # passes through verbatim in entity.content, ready for the
         # Builder to translate into create_object's nohome=True kwarg.
-        # See DESIGN/home.md (Validator/Builder downstream consume it).
+        # See docs/home.md (Validator/Builder downstream consume it).
         result = self._load_yaml_result({
             "deployment_id": 1,
             "typeclass": "evennia.objects.objects.DefaultObject",
@@ -667,7 +667,7 @@ class LoaderTest(TestCase):
         # `links:` lives alongside `entities:` and `incoming_exits:` as a
         # file-level key. Loader extracts it into file_metadata verbatim
         # — shape validation and resolution happen downstream.
-        # See DESIGN/links.md.
+        # See docs/links.md.
         result = self._load_yaml_result({
             "entities": [{"deployment_id": 1, "name": "A"}],
             "links": [
@@ -2216,7 +2216,7 @@ class ValidatorLinksFieldShapeTest(TestCase):
     `category`. The Validator runs shape checks against the dict once
     per file path (regardless of how many entities were declared).
 
-    See DESIGN/links.md for the spec.
+    See docs/links.md for the spec.
     """
 
     def _entity(self) -> LoadedEntity:
@@ -2398,7 +2398,7 @@ class ValidatorLinksFieldShapeTest(TestCase):
         self.assertTrue(any("x.yaml: links[0]" in e for e in v.errors))
 
     # ── Subscript-path attribute syntax checks ──
-    # See DESIGN/links.md § Subscript-path attribute syntax.
+    # See docs/links.md § Subscript-path attribute syntax.
 
     def test_subscript_path_string_keys_accepted(self):
         link = self._well_formed_link()
@@ -3502,7 +3502,7 @@ class ValidatorCrossRefResolutionTest(TestCase):
     # --- file-level: links: -----------------------------------------------
     #
     # Tier 4 walks each well-shaped link entry and resolves both `entity`
-    # and `points_to` against seen_ids. See DESIGN/links.md.
+    # and `points_to` against seen_ids. See docs/links.md.
 
     def _link(self, entity_file, entity_id, points_to_file, points_to_id):
         return {
@@ -4486,7 +4486,7 @@ class BuilderPass4LinksTest(TestCase):
     category=category)`` on the resolved ``entity`` mock; the test
     asserts those calls happened with the expected arguments.
 
-    See DESIGN/links.md.
+    See docs/links.md.
     """
 
     def _entity(self, *, path="x.yaml", deployment_id, name=None) -> LoadedEntity:
@@ -5190,7 +5190,7 @@ class LookupObjectTest(TestCase):
 
 
 class WBLogTest(TestCase):
-    """Verify the wb_log shim — see DESIGN/logging.md.
+    """Verify the wb_log shim — see docs/logging.md.
 
     The shim is thin by design (lazy import + format + delegate to
     evennia.utils.logger.log_file). Tests assert the format contract
@@ -5276,7 +5276,7 @@ class TestPostBuildHook(TestCase):
     """Builder invokes ``wb_at_post_build`` on the typeclass post-apply.
 
     Covers the duck-typed, opt-in, exception-isolated contract from
-    DESIGN/post-build-hook.md. The hook lets consumer typeclasses
+    docs/post-build-hook.md. The hook lets consumer typeclasses
     derive state from the YAML-supplied attribute values instead of
     the typeclass defaults that Evennia's ``at_object_creation`` sees.
     """

@@ -4,7 +4,7 @@ Map of all design documents in this directory, organised by category. Add new do
 
 ## Process and discipline
 
-- **[documentation-structure.md](documentation-structure.md)** — what goes in CLAUDE.md vs README.md vs DESIGN/, conventions for new design documents.
+- **[documentation-structure.md](documentation-structure.md)** — what goes in CLAUDE.md vs README.md vs docs/, conventions for new design documents.
 - **[progress.md](progress.md)** — running log of milestones with links to evidence.
 
 ## Architecture and design

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Validator — checks LoadedEntities before they reach the Builder.
 
-Predicate tiers (see DESIGN/validator.md for the full architecture):
+Predicate tiers (see docs/validator.md for the full architecture):
 
 - **Tier 1 — stateless predicates** (``PER_ENTITY_PREDICATES``): pure
   ``(entity) -> finding | None``. Always run.
@@ -40,7 +40,7 @@ def _check_deployment_id_well_formed(entity: LoadedEntity) -> str | None:
     """Every entity must declare deployment_id as a non-negative integer.
 
     The field is the load-bearing handle for the deployment-identity
-    contract (see DESIGN/deployment-identity.md). Without it, neither
+    contract (see docs/deployment-identity.md). Without it, neither
     cleanup nor cross-references can resolve.
     """
     content = entity.content if isinstance(entity.content, dict) else {}
@@ -65,7 +65,7 @@ def _check_deployment_id_well_formed(entity: LoadedEntity) -> str | None:
 
 # Tag categories starting with this prefix are reserved for the library
 # (currently `wb_deployment_file` and `wb_deployment_id`, set automatically
-# by the Builder). Authors can't use them in YAML — see DESIGN/deployment-identity.md.
+# by the Builder). Authors can't use them in YAML — see docs/deployment-identity.md.
 _RESERVED_TAG_CATEGORY_PREFIX = "wb_"
 
 
@@ -179,7 +179,7 @@ _CROSS_REF_KEYS = ("deployment_file", "deployment_id")
 
 # A link entry's full key set. `entity`, `attribute`, `points_to` are
 # required; `category` is optional. Anything else is rejected as an
-# unexpected key. See DESIGN/links.md for the spec.
+# unexpected key. See docs/links.md for the spec.
 _LINK_REQUIRED_KEYS = ("entity", "attribute", "points_to")
 _LINK_OPTIONAL_KEYS = ("category",)
 _LINK_ALL_KEYS = _LINK_REQUIRED_KEYS + _LINK_OPTIONAL_KEYS
@@ -241,7 +241,7 @@ def _check_cross_ref_dict_shape(value, entity_path: str, field_name: str) -> str
 def _check_subscript_path_shape(attribute: str) -> str | None:
     """Validate the subscript-path form of a links: `attribute` value.
 
-    The subscript-path syntax (see DESIGN/links.md) lets a link's
+    The subscript-path syntax (see docs/links.md) lets a link's
     `attribute:` field carry a Python expression like
     ``destinations["foo"]["bar"]`` so the Builder can navigate into an
     existing structured attribute and assign the resolved cross-ref
@@ -923,7 +923,7 @@ class Validator:
         ``points_to`` are ``{deployment_file, deployment_id}`` cross-ref
         dicts; ``attribute`` and ``category`` are non-empty strings.
         Findings name the path and array index for easy author location.
-        See DESIGN/links.md.
+        See docs/links.md.
         """
         if "links" not in meta:
             return
@@ -986,7 +986,7 @@ class Validator:
                 # Either bracket triggers the subscript-path check, so
                 # malformed inputs like 'foo]' or 'dict(thing]' are
                 # caught at validate time instead of being silently
-                # set as garbage attribute names. See DESIGN/links.md
+                # set as garbage attribute names. See docs/links.md
                 # § Subscript-path attribute syntax.
                 finding = _check_subscript_path_shape(attribute)
                 if finding is not None:
@@ -1059,7 +1059,7 @@ class Validator:
             # File-level links — both `entity` and `points_to` are
             # cross-refs that must resolve. Tier 1 has already filtered
             # out anything malformed; here we just check that whatever
-            # well-shaped refs remain land in seen_ids. See DESIGN/links.md.
+            # well-shaped refs remain land in seen_ids. See docs/links.md.
             links = meta.get("links")
             if isinstance(links, list):
                 for index, link in enumerate(links):

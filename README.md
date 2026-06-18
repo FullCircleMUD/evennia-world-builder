@@ -6,7 +6,7 @@ World content (rooms, exits, fixtures, descriptions) is expressed as data; an id
 
 ## Status
 
-**v0 feature-complete.** Single-entity build, `contents:` recursion, `exits:` recursion, same-file and cross-file cross-references, cross-file rebuild-dependency restoration via `incoming_exits:`, and cross-entity attribute references via `links:` all working end-to-end. The canonical YAML file shape ("shape 3" — top-level mapping with `entities:` key) lets authors mix multiple rooms with file-level metadata in one file. Surgical rebuilds (`wb_build zone=X room=Y`) keep cross-file exits alive automatically — operators can rebuild a single file without rebuilding everything that references it. See [DESIGN/progress.md](DESIGN/progress.md) for the running milestone log.
+**v0 feature-complete.** Single-entity build, `contents:` recursion, `exits:` recursion, same-file and cross-file cross-references, cross-file rebuild-dependency restoration via `incoming_exits:`, and cross-entity attribute references via `links:` all working end-to-end. The canonical YAML file shape ("shape 3" — top-level mapping with `entities:` key) lets authors mix multiple rooms with file-level metadata in one file. Surgical rebuilds (`wb_build zone=X room=Y`) keep cross-file exits alive automatically — operators can rebuild a single file without rebuilding everything that references it. See [docs/progress.md](docs/progress.md) for the running milestone log.
 
 ## What's working today
 
@@ -18,7 +18,7 @@ The library's pipeline reads → validates → builds YAML world content into Ev
 - **Flatten `contents:` and `exits:` blocks** into individual `LoadedEntity` records; nested entities inherit their parent's source path and get a Loader-synthesised `location:` cross-ref pointing at the parent. Recursion is depth-unlimited (chest in room contains key contains gem).
 - **Loader returns a `LoadResult(entities, file_metadata)`** — the entity list plus a `{file_path → {file-level keys}}` dict that downstream consumers (Validator, Builder) read for file-level concerns.
 - Validate every entity through a predicate-tier pipeline (mandatory fields, shape, typeclass-resolvability, per-file `deployment_id` uniqueness, reserved tag categories, `location:` either null or `{deployment_file, deployment_id}` cross-ref, `destination:` shape + presence consistent with whether the typeclass inherits from `DefaultExit`, optional `home:` either null or cross-ref), gathering all findings before any DB mutation. A Tier 4 deferred phase resolves every cross-ref (entity-level location/destination/home, file-level `incoming_exits:`, and file-level `links:` entity/points_to) against the per-file `seen_ids` index, catching dangling refs and id/file typos at validate time.
-- **Four-pass build:** non-exits in pass 1, exits in pass 2 (with destinations resolved against the just-built rooms), pass 3 walks each file's `incoming_exits:` registry and restores any cross-file dependent exits that were missing, then pass 4 walks each file's `links:` and applies cross-entity attribute references (e.g. door pairs sharing `other_side`) — see [DESIGN/links.md](DESIGN/links.md).
+- **Four-pass build:** non-exits in pass 1, exits in pass 2 (with destinations resolved against the just-built rooms), pass 3 walks each file's `incoming_exits:` registry and restores any cross-file dependent exits that were missing, then pass 4 walks each file's `links:` and applies cross-entity attribute references (e.g. door pairs sharing `other_side`) — see [docs/links.md](docs/links.md).
 - **Cross-file refs resolve via DB tag-search fallback** when the target isn't in the current build set. Operators can rebuild a single file (`wb_build zone=millholm room=bakery`) and exits/locations pointing into other files still resolve as long as the target file has been built at some point.
 - **`incoming_exits:` registration** at the file level lets a file declare cross-file dependents that should be kept alive on isolated rebuilds. When a registered target's file isn't in scope and the target was cascade-deleted by cleanup, pass 3 fetches the canonical file and rebuilds the target — tagged with its true home file so future cleanups handle it correctly.
 - **`links:` declaration** at the file level expresses cross-entity attribute references (e.g. paired bidirectional doors sharing `other_side`, teleporters' targets, NPC-master/apprentice). Each link is a single directed assignment; reciprocal pairs are two granular entries. Pass 4 fires after the cache is fully warm, so most resolutions are cache hits.
@@ -62,8 +62,8 @@ WORLDBUILDER_READER_KWARGS = {
 ## Learn more
 
 - **[CLAUDE.md](CLAUDE.md)** — load-bearing principles and orientation for working in the repository.
-- **[DESIGN/INDEX.md](DESIGN/INDEX.md)** — index of design documents.
-- **[DESIGN/archive/WorldAsDataNotes.md](DESIGN/archive/WorldAsDataNotes.md)** — the original brainstorm that led to creating this library.
+- **[docs/INDEX.md](docs/INDEX.md)** — index of design documents.
+- **[docs/archive/WorldAsDataNotes.md](docs/archive/WorldAsDataNotes.md)** — the original brainstorm that led to creating this library.
 
 ## License
 

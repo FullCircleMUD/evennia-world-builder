@@ -4,7 +4,7 @@ Documentation for [builder.py](builder.py). The source file is intentionally cod
 
 The Builder is the **only component in the pipeline that mutates the consumer's database**. By the time `Builder.build()` runs the Validator has guaranteed every entity's mandatory fields are present and well-shaped, every declared typeclass actually resolves (under `evennia_runtime=True`), and every cross-ref resolves in the build set (under `resolve_cross_refs=True`). The Builder trusts those guarantees and skips re-checking shape.
 
-> **Note:** there is also a higher-level design document at [DESIGN/builder.md](../../DESIGN/builder.md) covering the big-picture rationale and trade-offs. This file is the implementation reference.
+> **Note:** there is also a higher-level design document at [docs/builder.md](../../docs/builder.md) covering the big-picture rationale and trade-offs. This file is the implementation reference.
 
 ---
 
@@ -16,14 +16,14 @@ _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 _WB_AT_POST_BUILD_ATTR = "wb_at_post_build"
 ```
 
-The two tag categories are the **deployment-identity pair** the Builder writes onto every created object — see [DESIGN/deployment-identity.md](../../DESIGN/deployment-identity.md) for the load-bearing identity contract. These two values are the durable handle by which:
+The two tag categories are the **deployment-identity pair** the Builder writes onto every created object — see [docs/deployment-identity.md](../../docs/deployment-identity.md) for the load-bearing identity contract. These two values are the durable handle by which:
 
 - Cleanup finds existing objects to delete on rebuild (`search_tag(key=path, category="wb_deployment_file")`).
 - Cross-file cross-references (spike 4) will look up parents already in the DB from a previous invocation.
 
 **Synchronisation requirement:** the `wb_*` prefix is reserved by the library and the Validator's `_check_tags_no_reserved_category` predicate refuses any author tag in that namespace. Adding a new `wb_*` category here without a corresponding update to the validator's reserved-prefix check would let an author tag collide with a Builder-set tag silently.
 
-`_WB_AT_POST_BUILD_ATTR` names the consumer-typeclass method the Builder duck-type-invokes at the end of `_build_one` (see `_invoke_post_build_hook` below). Hook design: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
+`_WB_AT_POST_BUILD_ATTR` names the consumer-typeclass method the Builder duck-type-invokes at the end of `_build_one` (see `_invoke_post_build_hook` below). Hook design: [docs/post-build-hook.md](../../docs/post-build-hook.md).
 
 ---
 
@@ -76,7 +76,7 @@ def __init__(
 
 `definitions` is stored for future use (level vocabulary may inform placement decisions like building exits at zone boundaries); current logic doesn't consult it.
 
-`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys extracted by the Loader. Currently consumed: `incoming_exits:` (walked by pass 3 for cross-file dependency restore) and `links:` (walked by pass 4 for cross-entity attribute references; see [DESIGN/links.md](../../DESIGN/links.md)).
+`file_metadata` is the per-file metadata dict from `LoadResult.file_metadata` — file-level keys extracted by the Loader. Currently consumed: `incoming_exits:` (walked by pass 3 for cross-file dependency restore) and `links:` (walked by pass 4 for cross-entity attribute references; see [docs/links.md](../../docs/links.md)).
 
 `reader` is the configured Reader, used by pass 3 to fetch canonical files when an `incoming_exits:` target is missing from both `_built_by_id` and the DB. Optional — Builder constructed without a reader can still build entities; pass 3 raises `BuilderError` only if it actually needs to fetch a missing dep.
 
@@ -98,7 +98,7 @@ The single public method. Returns the list of created Evennia objects on success
 4. **Pass 1+2 partition:** split the entity list into `non_exits` (entities without a `destination:` field) and `exits` (entities with one). Iterate `non_exits + exits` so every non-exit is built before any exit — this guarantees an exit's destination cross-ref always resolves to a non-exit room that's already in `_built_by_id`. Within each pass, entity order is preserved (depth-first pre-order from the Loader for nested entities; YAML order for top-level entities).
 5. For each entity in the partitioned order, call `_build_one(entity, create_object)` (see helper below for the per-entity steps).
 6. **Pass 3 (dependency restore):** call `_run_pass_3(file_paths_in_scope, create_object)`. Walks `file_metadata[path]["incoming_exits"]` for each file in scope; for each registered ref that's missing from both `_built_by_id` and the DB tag-search, fetches the canonical file via the Reader and builds the missing entity through the same `_build_one` helper.
-7. **Pass 4 (links):** call `_run_pass_4(file_paths_in_scope)`. Walks `file_metadata[path]["links"]` for each file in scope; for each entry, resolves `entity` and `points_to` via `_resolve_cross_ref` (cache → DB) and dispatches on the `attribute` field — bare names (no `[` or `]`) go through `entity_obj.attributes.add(attribute, points_to_obj, category=category)`; subscript paths (either bracket present, e.g. `'destinations["foo"]["bar"]'`) go through `_assign_via_subscript_path` which parses via `ast.parse`, walks the existing top-level attribute and subscript chain, assigns the resolved object at the leaf, and re-saves. Pass 4 sees the fully warmed `_built_by_id` (own builds + DB-resolved cross-refs + pass-3 restorations) so most resolutions are cache hits. See [DESIGN/links.md](../../DESIGN/links.md).
+7. **Pass 4 (links):** call `_run_pass_4(file_paths_in_scope)`. Walks `file_metadata[path]["links"]` for each file in scope; for each entry, resolves `entity` and `points_to` via `_resolve_cross_ref` (cache → DB) and dispatches on the `attribute` field — bare names (no `[` or `]`) go through `entity_obj.attributes.add(attribute, points_to_obj, category=category)`; subscript paths (either bracket present, e.g. `'destinations["foo"]["bar"]'`) go through `_assign_via_subscript_path` which parses via `ast.parse`, walks the existing top-level attribute and subscript chain, assigns the resolved object at the leaf, and re-saves. Pass 4 sees the fully warmed `_built_by_id` (own builds + DB-resolved cross-refs + pass-3 restorations) so most resolutions are cache hits. See [docs/links.md](../../docs/links.md).
 8. Return the combined list of created objects (passes 1+2 + any pass-3 restorations). Pass 4 mutates already-built objects and does not return new ones.
 
 #### Two-pass dispatch
@@ -117,7 +117,7 @@ _resolve_cross_ref(location) → [_resolve_cross_ref(destination)] → [translat
 
 `create_object` triggers the typeclass's `at_object_creation()` hook, which can set its own default attributes (e.g. `self.db.room_type = "bakery"`). Any subsequent `_apply_*` call overwrites those defaults if the YAML declares the same key. **Contract: typeclass declares defaults; YAML overrides per-instance.**
 
-`_invoke_post_build_hook` is the final per-entity step: a duck-typed, opt-in call to `obj.wb_at_post_build()` if the typeclass defines it. By the time this fires, every `_apply_*` has run, so consumer typeclasses that need to derive state from the YAML-supplied values (rather than the defaults Evennia's `at_object_creation` saw) get a documented seam. Hook design and rationale: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
+`_invoke_post_build_hook` is the final per-entity step: a duck-typed, opt-in call to `obj.wb_at_post_build()` if the typeclass defines it. By the time this fires, every `_apply_*` has run, so consumer typeclasses that need to derive state from the YAML-supplied values (rather than the defaults Evennia's `at_object_creation` saw) get a documented seam. Hook design and rationale: [docs/post-build-hook.md](../../docs/post-build-hook.md).
 
 #### Field expectations
 
@@ -195,7 +195,7 @@ Filtering candidates from a single file-level query is cheaper than two `search_
 
 #### Multiple matches
 
-A pair of `(deployment_file, deployment_id)` is contractually unique across the whole world (per the [deployment-identity contract](../../DESIGN/deployment-identity.md)). If `_lookup_in_db` finds more than one match, that's a cleanup-on-rebuild integrity failure — a previous build's orphan tagged objects weren't cleaned up. The method raises `BuilderError` rather than silently picking one, so the operator gets clear evidence of the corruption.
+A pair of `(deployment_file, deployment_id)` is contractually unique across the whole world (per the [deployment-identity contract](../../docs/deployment-identity.md)). If `_lookup_in_db` finds more than one match, that's a cleanup-on-rebuild integrity failure — a previous build's orphan tagged objects weren't cleaned up. The method raises `BuilderError` rather than silently picking one, so the operator gets clear evidence of the corruption.
 
 ### `_cleanup(file_paths)`
 
@@ -292,7 +292,7 @@ Three properties to note:
 - **Fires per-entity in passes 1+2, not after pass 3+4.** Symmetric with `evennia-mob-spawner`'s `ms_at_post_spawn`. Consumer typeclasses that needed to read link-resolved attributes (assigned in pass 4) would not see them through this hook. None of the current consumers need this; if a future case appears, a second hook with post-pass-4 timing is straightforward to add.
 - **Exception isolation.** Hook failures are logged via `wb_log` at `ERROR` level and the entity remains built. Consumer hook bugs cannot turn a successful apply into a `BuilderError` abort. This is a deliberate departure from the "no partial state" Builder rule because the alternative — failing the build over a consumer-side bug — would be more brittle.
 
-Full contract, rationale, and comparison to `ms_at_post_spawn`: [DESIGN/post-build-hook.md](../../DESIGN/post-build-hook.md).
+Full contract, rationale, and comparison to `ms_at_post_spawn`: [docs/post-build-hook.md](../../docs/post-build-hook.md).
 
 ---
 
@@ -358,7 +358,7 @@ Tests use `unittest.mock.patch` against `evennia.utils.create.create_object` and
 
 ### Pass 4 — links assignment
 
-`_run_pass_4(file_paths_in_scope)` walks each in-scope file's `links:` and applies each entry via `_apply_one_link`, which resolves both `entity` and `points_to` through the same `_resolve_cross_ref` helper passes 1/2 use, then dispatches on the `attribute` field: bare names (no `[` or `]`) call `entity_obj.attributes.add(attribute, points_to_obj, category=category)`; subscript paths (either bracket present, e.g. `'destinations["foo"]["bar"]'`) call `_assign_via_subscript_path` which parses the path with `ast.parse`, walks the leading attribute and subscript chain, assigns at the leaf, and re-saves the top-level attribute. Triggering on either bracket (rather than just `[`) means defensively-malformed inputs like `'foo]'` route to the path branch and fail loudly via the parser instead of being silently set as garbage attribute names. See [DESIGN/links.md](../../DESIGN/links.md) for the design rationale and the path-syntax preconditions (top-level attribute must already exist; `category:` not allowed with path form).
+`_run_pass_4(file_paths_in_scope)` walks each in-scope file's `links:` and applies each entry via `_apply_one_link`, which resolves both `entity` and `points_to` through the same `_resolve_cross_ref` helper passes 1/2 use, then dispatches on the `attribute` field: bare names (no `[` or `]`) call `entity_obj.attributes.add(attribute, points_to_obj, category=category)`; subscript paths (either bracket present, e.g. `'destinations["foo"]["bar"]'`) call `_assign_via_subscript_path` which parses the path with `ast.parse`, walks the leading attribute and subscript chain, assigns at the leaf, and re-saves the top-level attribute. Triggering on either bracket (rather than just `[`) means defensively-malformed inputs like `'foo]'` route to the path branch and fail loudly via the parser instead of being silently set as garbage attribute names. See [docs/links.md](../../docs/links.md) for the design rationale and the path-syntax preconditions (top-level attribute must already exist; `category:` not allowed with path form).
 
 | Test | Covers | Location |
 |---|---|---|

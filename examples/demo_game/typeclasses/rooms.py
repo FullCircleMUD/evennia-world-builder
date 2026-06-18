@@ -70,7 +70,7 @@ class PostBuildHookRoom(DefaultRoom):
 
     Deliberately trivial. The whole point is one observable side
     effect that survives ``look`` without needing the Evennia shell.
-    See DESIGN/post-build-hook.md for the contract.
+    See docs/post-build-hook.md for the contract.
     """
 
     def wb_at_post_build(self):

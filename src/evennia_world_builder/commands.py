@@ -10,10 +10,10 @@ Conventions for any command shipping from world-builder:
   AccountCmdSet, so the command works both OOC and IC. The consumer
   game does not need to import or wire these manually.
 
-See DESIGN/discovery-and-loading.md for the pipeline these commands
+See docs/discovery-and-loading.md for the pipeline these commands
 ultimately exercise. Validation gating (when wb_build pre-validates
 the whole repo vs trusting the consumer's CI gate) is documented in
-DESIGN/validation-gating.md.
+docs/validation-gating.md.
 """
 
 from evennia.commands.command import Command as BaseCommand

@@ -32,7 +32,7 @@ class Definitions:
                 default) makes wb_build pre-validate the whole repo before
                 every build; True trusts the gate and skips that work.
                 The library cannot verify this assertion — see
-                DESIGN/validation-gating.md for rationale.
+                docs/validation-gating.md for rationale.
         strict_attributes:
                 Scaffolded for a future feature, currently inert. The
                 planned behaviour: when True, the validator will reject

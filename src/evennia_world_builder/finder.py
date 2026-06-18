@@ -2,7 +2,7 @@
 """Finder — walks the manifest hierarchy following an operator query.
 
 Returns a FoundLocation that the Loader uses as its entry point.
-See DESIGN/discovery-and-loading.md for the design.
+See docs/discovery-and-loading.md for the design.
 """
 from dataclasses import dataclass
 

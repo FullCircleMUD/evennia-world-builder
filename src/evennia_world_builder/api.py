@@ -8,13 +8,13 @@ Loader/Finder) which is invoked via ``wb_build``.
 
 The motivation: builder-authored objects are identified by the stable
 ``(deployment_file, deployment_id)`` pair (see
-``DESIGN/deployment-identity.md``). Dbrefs change across redeploys; the
+``docs/deployment-identity.md``). Dbrefs change across redeploys; the
 identity pair does not. Game code that needs to refer to a specific
 library-built object should resolve the identity pair to a dbref or
 object at runtime rather than hard-coding a dbref that will go stale on
 the next ``wb_build``.
 
-See ``DESIGN/runtime-lookups.md`` for the contract.
+See ``docs/runtime-lookups.md`` for the contract.
 """
 from .errors import ApiError
 

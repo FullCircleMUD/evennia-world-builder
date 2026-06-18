@@ -2,7 +2,7 @@
 """Loader — recursively reads all leaf content under a FoundLocation.
 
 Returns a flat list of LoadedEntity records. See
-DESIGN/discovery-and-loading.md for the design.
+docs/discovery-and-loading.md for the design.
 
 Index ordering is execution ordering: the Loader walks each index in
 declared order, recursing into folders depth-first. Consumers control

@@ -9,7 +9,7 @@ Promoted from the original spike: the urllib/yaml fetch logic now
 lives in evennia_world_builder.GitHubReader; this command is the thin
 consumer-side wrapper that wires settings into the library.
 
-See evennia-world-builder/DESIGN/spike-1-load-from-github.md for the
+See evennia-world-builder/docs/spike-1-load-from-github.md for the
 spike contract.
 """
 import pprint
