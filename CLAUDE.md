@@ -28,8 +28,7 @@ For any non-trivial task, start by reading in this order:
 
 1. [README.md](README.md) — what the project is, status, quick start.
 2. [docs/INDEX.md](docs/INDEX.md) — map of all design docs.
-3. [docs/documentation-structure.md](docs/documentation-structure.md) — what goes in CLAUDE.md vs README.md vs docs/, and naming conventions.
-4. [docs/archive/WorldAsDataNotes.md](docs/archive/WorldAsDataNotes.md) — *archived* brainstorm captured during FCM-side discussions that led to creating this library. Useful historical context; not authoritative.
+3. [docs/archive/WorldAsDataNotes.md](docs/archive/WorldAsDataNotes.md) — *archived* brainstorm captured during FCM-side discussions that led to creating this library. Useful historical context; not authoritative.
 
 ## Load-bearing architectural principles
 
@@ -56,7 +55,6 @@ Areas where scope questions are likely to need explicit decisions (TBD when they
 ## Working conventions
 
 - **Editing design docs.** Update or add design documents whenever an architectural decision is made or refined. Capture the *why*, not just the *what*. Index new docs in [docs/INDEX.md](docs/INDEX.md).
-- **CLAUDE.md vs README.md vs docs/.** See [docs/documentation-structure.md](docs/documentation-structure.md) for the split. CLAUDE.md is for Claude-facing instructions; README.md is for humans landing on the repo; docs/ is the technical wiki.
 - **Don't put implementation detail in this file or README.** Link out to docs/ instead. Keep CLAUDE.md and README.md stable; let docs/ churn.
 - **License.** BSD 3-Clause. New source files should carry a short SPDX header (`# SPDX-License-Identifier: BSD-3-Clause`) once code starts landing.
 
