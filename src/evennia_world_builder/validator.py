@@ -13,9 +13,10 @@ Predicate tiers (see docs/validator.md for the full architecture):
   runtime to be importable. Run only when the caller passes
   ``evennia_runtime=True`` to ``Validator.__init__``. ``wb_build``
   passes True; ``wb-validate`` (CLI) leaves it False.
-- **Tier 4 — cross-repo checks** (planned, not yet shipped): a deferred
-  phase after the per-entity loop, against the fully-built
-  ``seen_ids`` index. Lands when cross-references go in.
+- **Tier 4 — cross-ref resolution** (``_check_cross_refs``): a deferred
+  phase after the per-entity loop that resolves cross-references against
+  the fully-built ``seen_ids`` index. Runs only when the caller passes
+  ``resolve_cross_refs=True`` to ``Validator.__init__``.
 
 All findings are appended to ``self.messages``; errors are also tracked
 separately, and ``validate()`` raises ``ValidatorError`` at the end of

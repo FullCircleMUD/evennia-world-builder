@@ -138,7 +138,7 @@ Defensive about malformed input: a non-list `contents:` or `exits:` value is sil
 @dataclass(frozen=True)
 class LoadedEntity:
     location: dict[str, str]   # full hierarchical position (folder discovery; same for nested)
-    content: dict              # parsed YAML body; for nested, `contents` popped + `location` synthesised
+    content: object            # parsed YAML body, usually a dict (non-dict on malformed input); for nested, `contents` popped + `location` synthesised
     path: str                  # source file path; same for top-level + nested in the same file
     is_nested: bool = False    # True iff loaded from inside a `contents:` block
     had_author_location: bool = False  # True iff the original YAML had a `location:` key
@@ -146,7 +146,7 @@ class LoadedEntity:
 @dataclass(frozen=True)
 class LoadResult:
     entities: list             # list[LoadedEntity], the flat depth-first pre-order list
-    file_metadata: dict        # {file_path: {file_level_key: value}} — empty per-file dict if no file-level keys
+    file_metadata: dict        # {file_path: {file_level_key: value}} — a file appears only if it declared at least one file-level key
 
 class Loader:
     def __init__(self, reader: Reader, definitions: Definitions): ...

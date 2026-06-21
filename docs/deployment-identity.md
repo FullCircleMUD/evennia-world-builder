@@ -34,26 +34,19 @@ A non-negative integer, author-supplied in YAML, mandatory on every entity. Uniq
 
 ## YAML shape
 
-A leaf YAML file may declare one entity (top-level mapping) or many (top-level list of mappings). Both shapes carry `deployment_id` per entity:
+A leaf YAML file is a top-level mapping with an `entities:` key holding a list of entity mappings. Each entity carries its own `deployment_id`:
 
 ```yaml
-# Single entity:
-deployment_id: 1
-name: The Bakery
-description: Smells of bread.
+entities:
+  - deployment_id: 1
+    name: Forest Path
+    description: Pines crowd the trail.
+  - deployment_id: 2
+    name: Forest Clearing
+    description: Sunlight breaks through.
 ```
 
-```yaml
-# Multiple entities in one file:
-- deployment_id: 1
-  name: Forest Path
-  description: Pines crowd the trail.
-- deployment_id: 2
-  name: Forest Clearing
-  description: Sunlight breaks through.
-```
-
-The library normalises both shapes — a top-level mapping is treated as a one-element list. A single source file may therefore produce multiple `LoadedEntity` records.
+File-level keys (`incoming_exits:`, `links:`) sit alongside `entities:` in the same top-level mapping. A file that is not a top-level mapping with an `entities:` list is rejected at load. A single source file may produce multiple `LoadedEntity` records.
 
 ## File-level `incoming_exits:` registry
 

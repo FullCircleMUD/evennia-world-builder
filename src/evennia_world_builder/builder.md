@@ -33,7 +33,11 @@ The two tag categories are the **deployment-identity pair** the Builder writes o
 
 ```python
 class Builder:
-    def __init__(self, definitions: Definitions): ...
+    def __init__(
+        self, definitions: Definitions, *,
+        file_metadata: dict | None = None,
+        reader: Reader | None = None,
+    ): ...
     def build(self, entities: list) -> list: ...
 
     # Public attributes populated during build():
