@@ -2,7 +2,17 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
-## 2026-05-18 (latest)
+## 2026-08-09 — `wb_build` confined to its owning shard
+
+`wb_build` now refuses, before dispatch, when the process is not the one that owns the scope: `all` is refused on a sharded deployment, the query must start with `shard=`, and the named shard must match `get_shard_id()`. The router's `SHARD_ID` is mandated `"router"`, so it fails the match without needing a role check — which is what stops a build there creating rooms with no shard stamp. A fourth check runs once `definitions.yaml` is parsed: `shard` must be the first declared level, the only enforcement of that mandate.
+
+Detection is *installed **and** role is not `monolith`*, not merely that the import succeeded. Monolith is a non-sharded install, and all four checks no-op there exactly as they do standalone.
+
+Ported from `evennia-mob-spawner`, which hit the problem first via mobs spawning with `shard_id=NULL`. The two implementations are deliberately identical — same three functions, same call sites, verified by comparing control flow with messages stripped. Only the operator wording differs.
+
+Verified in-game on a live two-process deployment: all four refusals fired, and `wb_build shard=shard1` built cleanly from shard1. **409 unit tests green** (was 390, +19 across `ActiveShardIdTest`, `CheckShardScopeTest`, `CheckShardLevelsTest`). See [interoperability.md](interoperability.md).
+
+## 2026-05-18
 
 - **`wb_at_post_build` hook shipped — per-entity, duck-typed, opt-in.** New consumer-typeclass seam for state derivation after every YAML attribute/tag/lock/alias has been applied. `Builder._build_one` calls `obj.wb_at_post_build()` if the typeclass defines it; absent, silent no-op. Exceptions logged via `wb_log` at `ERROR` and the build continues — consumer hook bugs can't turn a successful apply into a partial-state abort. Mirrors `evennia-mob-spawner`'s `ms_at_post_spawn` (decision #23 over there) — same shape, same opt-in mechanism, same exception isolation. **390 unit tests green** (386 → 390, +4 in new `TestPostBuildHook`).
 

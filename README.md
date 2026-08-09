@@ -34,6 +34,8 @@ Two surfaces:
 
 The library is **shards-compatible but does not require shards**. If [`evennia-shards`](https://github.com/FullCircleMUD/evennia-shards) is installed alongside, `wb_build` automatically carries the active multi-tenant context across the `run_async` thread spawn — rooms built in the worker get stamped with the running process's `shard_id` and become correctly scoped under the auto-filter. If shards isn't installed, the library falls back to an identity passthrough at import time and behaves identically to a non-sharded deployment. No configuration needed either way; the integration is a try-import in `commands.py` using shards' `preserve_tenant_context` helper.
 
+Co-installed, the pairing also requires `shard` as the first declared level and confines `wb_build` to the shard it is running as. See [docs/interoperability.md](docs/interoperability.md).
+
 ## Is this for me?
 
 The library is Evennia-flavored and primarily intended for use on **[FullCircleMUD](https://github.com/FullCircleMUD/game)**, but is consumer-game-agnostic by design: it does not bake in assumptions about specific typeclasses, zones, or game systems. If you are building world content on Evennia and would like to author it as YAML rather than as imperative Python builders, this library aims to be useful to you.

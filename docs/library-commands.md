@@ -44,6 +44,12 @@ On any validation finding the command surfaces every message via `caller.msg()` 
 
 **Bare `wb_build` does nothing.** The explicit `all` keyword is required for a full-world build. This is a deliberate guard rail against accidental rebuilds — a stray Enter on `wb_build` should not start tearing the world apart.
 
+**Co-installed with `evennia-shards`** (and the role is not `monolith`), three further refusals apply — see [interoperability.md](interoperability.md):
+
+- `wb_build all` is refused; build one shard at a time.
+- The query must start with `shard=`.
+- The named shard must be the one this process is running as.
+
 **Failure modes:**
 
 - No scope specified → refusal with a usage hint.
