@@ -1,6 +1,6 @@
 # Builder
 
-The architectural design of the Builder — the principles it embodies and the trade-offs that shape it. For per-method behaviour, code-level detail, signatures, and test cross-links, see the implementation reference at [src/evennia_world_builder/builder.md](../src/evennia_world_builder/builder.md).
+The architectural design of the Builder — the principles it embodies and the trade-offs that shape it. For per-method behaviour and code-level detail, see the docstrings in [src/evennia_world_builder/builder.py](../src/evennia_world_builder/builder.py).
 
 ## Role in the pipeline
 
@@ -66,6 +66,6 @@ By the time pass 4 runs, `_built_by_id` holds every own-build entity, every cros
 
 ## See also
 
-- [src/evennia_world_builder/builder.md](../src/evennia_world_builder/builder.md) — implementation reference (signatures, algorithms, test cross-links).
+- [src/evennia_world_builder/builder.py](../src/evennia_world_builder/builder.py) — implementation reference (signatures, algorithms) via its own docstrings.
 - [deployment-identity.md](deployment-identity.md) — the `(deployment_file, deployment_id)` identity scheme that anchors cleanup, cross-refs, and the Builder's in-build map.
 - [validator.md](validator.md) — what the Validator has guaranteed by the time the Builder runs.

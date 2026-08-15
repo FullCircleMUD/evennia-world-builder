@@ -1,5 +1,19 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Documentation: see builder.md (co-located).
+"""builder — creates Evennia objects from validated LoadedEntities.
+
+The Builder is the only component in the pipeline that mutates the
+consumer's database. By the time Builder.build() runs, the Validator has
+guaranteed every entity's mandatory fields are present and well-shaped,
+every declared typeclass actually resolves (under evennia_runtime=True),
+and every cross-ref resolves in the build set (under
+resolve_cross_refs=True). The Builder trusts those guarantees and skips
+re-checking shape.
+
+See docs/builder.md for the architectural rationale (clean-then-rebuild,
+two-pass entity creation, DB fallback for cross-file refs, no partial
+state) and docs/deployment-identity.md for the (deployment_file,
+deployment_id) identity scheme referenced throughout this module.
+"""
 import ast
 
 from django.core.exceptions import ObjectDoesNotExist
@@ -12,7 +26,13 @@ from .loader import LoadedEntity
 from .log import wb_log
 
 
-# Reserved tag categories — keep in sync with validator's `wb_*` prefix check.
+# Reserved tag categories — the deployment-identity pair the Builder writes
+# onto every created object. Cleanup uses the file category to find existing
+# objects to delete on rebuild; cross-file cross-refs use both to look up
+# parents already in the DB from a prior build. Keep in sync with the
+# validator's `wb_*` prefix check — adding a new `wb_*` category here without
+# a matching update to the validator's reserved-prefix check would let an
+# author tag collide with a Builder-set tag silently.
 _TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
 _TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
 
@@ -25,11 +45,42 @@ _WB_AT_POST_BUILD_ATTR = "wb_at_post_build"
 
 
 class Builder:
+    """Apply validated entities to the Evennia database, idempotently.
+
+    Clean-then-rebuild, not diff-then-reconcile (see docs/builder.md):
+    every build() call sweeps prior deployments of the affected files and
+    recreates from the current YAML, so the same YAML applied N times
+    produces the same end state. Object dbrefs increment (Evennia never
+    reuses them), but the count of objects tagged with each
+    deployment_file stays at exactly the YAML's declared count.
+
+    Instances are reusable across multiple build() calls — deleted_count
+    and _built_by_id are per-build state, reset at the start of each call.
+    """
+
     def __init__(
         self, definitions: Definitions, *,
         file_metadata: dict | None = None,
         reader: Reader | None = None,
     ):
+        """Construct a Builder against a Definitions and optional file context.
+
+        definitions is stored for future use (level vocabulary may inform
+        placement decisions like building exits at zone boundaries);
+        current logic doesn't consult it.
+
+        file_metadata is the per-file metadata dict from
+        Loader.LoadResult.file_metadata — file-level keys extracted by
+        the Loader. Currently consumed: incoming_exits (walked by pass 3
+        for cross-file dependency restore) and links (walked by pass 4
+        for cross-entity attribute references; see docs/links.md).
+
+        reader is the configured Reader, used by pass 3 to fetch
+        canonical files when an incoming_exits target is missing from
+        both _built_by_id and the DB. Optional — a Builder constructed
+        without a reader can still build entities; pass 3 raises
+        BuilderError only if it actually needs to fetch a missing dep.
+        """
         self.definitions = definitions
         self.deleted_count: int = 0
         self._built_by_id: dict = {}
@@ -45,6 +96,47 @@ class Builder:
         self._reader: Reader | None = reader
 
     def build(self, entities: list) -> list:
+        """Apply entities to the database; return the created objects.
+
+        The single public method. Raises BuilderError on any failure —
+        each step wraps its underlying exception with a contextual
+        message naming the offending entity path and (where applicable)
+        the field that failed, via `from e` so the original exception is
+        preserved for debugging. `_resolve_cross_ref` raises BuilderError
+        directly with more specific context, so the build loop re-raises
+        that as-is rather than wrapping it again. Callers (`wb_build`)
+        catch BuilderError, surface it via caller.msg, and refuse without
+        continuing — partial state is never returned.
+
+        Algorithm:
+        1. Reset deleted_count and _built_by_id (per-build state).
+        2. Lazy-import evennia.utils.create.create_object.
+        3. Cleanup pass — sweep prior deployments of the entities' source
+           files (see _cleanup).
+        4. Partition entities into non_exits and exits (on whether
+           "destination" is in content), then build non_exits before
+           exits so every exit's destination cross-ref resolves to an
+           already-built room. See docs/builder.md for why two passes
+           are required, not just preferred.
+        5. Build each entity via _build_one, in partitioned order.
+        6. Pass 3 — restore any incoming_exits dependency missing from
+           both _built_by_id and the DB (see _run_pass_3).
+        7. Pass 4 — assign every links: entry (see _run_pass_4).
+        8. Return the objects created in passes 1+2+3. Pass 4 mutates
+           already-built objects and returns nothing new.
+
+        Field expectations (guaranteed by the Validator's Tier 1
+        predicates before this runs): content["name"] and
+        content["typeclass"] are non-empty strings; content["location"]
+        is null (orphan) or a strict {deployment_file, deployment_id}
+        cross-ref; content["deployment_id"] is a non-negative integer.
+        Optional: content["description"] (default ""), content["destination"]
+        (marks the entity an exit, built in pass 2), content["home"] (null
+        -> nohome=True, since passing home=None to create_object falls
+        through to settings.DEFAULT_HOME rather than yielding None — see
+        evennia/objects/manager.py), content["aliases"], content["locks"],
+        content["attributes"], content["tags"].
+        """
         self.deleted_count = 0
         self._built_by_id = {}
 
@@ -85,11 +177,15 @@ class Builder:
         """Build a single entity through create_object + apply_* steps.
 
         Used by passes 1, 2, and 3. Resolves the entity's location and
-        (when present) destination via _resolve_cross_ref, calls
-        create_object, stashes the result in _built_by_id keyed by
-        (path, deployment_id), then applies aliases/locks/attributes/
-        tags. Wraps every step in BuilderError so failures surface with
-        contextual messages naming the offending entity.
+        (when present) destination via _resolve_cross_ref, translates an
+        optional home: field (null -> nohome=True; a cross-ref dict ->
+        home=<resolved obj>; absent -> no kwarg, falls back to
+        settings.DEFAULT_HOME), calls create_object, stashes the result
+        in _built_by_id keyed by (path, deployment_id), then applies
+        aliases/locks/attributes/tags and finally invokes the optional
+        wb_at_post_build hook. Wraps every step in BuilderError so
+        failures surface with contextual messages naming the offending
+        entity.
         """
         content = entity.content if isinstance(entity.content, dict) else {}
         # Tier 1 has already validated shape.
@@ -469,6 +565,42 @@ class Builder:
         return None
 
     def _resolve_cross_ref(self, ref, entity_path: str, field_name: str):
+        """Turn a location/destination cross-ref value into a create_object arg.
+
+        Single helper for both content["location"] and
+        content["destination"] — the only difference between the two is
+        the value the caller passes; the lookup logic is identical. The
+        Validator's shape checks have already guaranteed the value is
+        null or a well-shaped cross-ref dict, so this method trusts shape.
+
+        None -> None (orphan placement).
+        Cross-ref dict -> a two-step lookup: try _built_by_id first (hit
+        when the target was built earlier in this build() call), then
+        fall through to _lookup_in_db for a target already in the
+        database from a previous build. A DB hit is cached back into
+        _built_by_id so subsequent refs to the same target in this pass
+        don't re-query. If both miss, raises BuilderError naming the
+        field and the (deployment_file, deployment_id) pair.
+
+        Cross-file refs to entities not built in this invocation resolve
+        via the DB fallback — this is what lets operators rebuild a
+        single file and have exits/locations pointing into other files
+        still resolve, as long as the target file has been built at some
+        point.
+
+        Same-file forward refs (a top-level entity's location pointing at
+        another top-level entity later in the same file) miss the lookup
+        because the parent hasn't been built yet at this point in the
+        iteration, and raise BuilderError — the author has to reorder.
+        Validator Tier 4 sees forward refs as valid (seen_ids is fully
+        built before Tier 4 runs); this refusal is the load-bearing
+        distinction between "ref is correct in the abstract" and "ref can
+        be used at this point in the build." This restriction does not
+        apply to destinations on exits — the two-pass build in build()
+        builds every non-exit before any exit, so destination cross-refs
+        always resolve as long as the target is in the build set,
+        regardless of YAML order.
+        """
         if ref is None:
             return None
 
@@ -494,6 +626,23 @@ class Builder:
         )
 
     def _lookup_in_db(self, deployment_file: str, deployment_id: int):
+        """Find an existing object tagged with this identity pair, if any.
+
+        The DB-side counterpart to the in-build _built_by_id map — used
+        by _resolve_cross_ref to resolve cross-file refs to entities
+        already in the database from a previous build invocation.
+
+        Queries search_tag(key=deployment_file, category=
+        "wb_deployment_file") for every object from that file, then
+        filters client-side by the wb_deployment_id tag. Filtering a
+        single file-level query client-side is cheaper than two
+        search_tag calls plus an intersection — the number of objects per
+        file is typically small (the file's declared entity count), so
+        the in-Python filter is fast.
+
+        Returns the matching object, None (no match), or raises
+        BuilderError (more than one match — see below).
+        """
         # Lazy import — Evennia must be bootstrapped before this fires.
         from evennia.utils.search import search_tag
 
@@ -528,6 +677,27 @@ class Builder:
         return matches[0]
 
     def _cleanup(self, file_paths) -> None:
+        """Delete every existing object tagged with any file in file_paths.
+
+        Called once at the start of build(). For each path: search_tag
+        for existing objects from prior deployments of that file, then
+        delete each one (Evennia relocates any contents, including a
+        player standing in a deleted room, to the home location
+        automatically).
+
+        One tag-search per file rather than one per entity: a file's full
+        state replaces whatever was there, so sweeping by file means
+        entities added since the last build land fresh, entities removed
+        are deleted, and entities changed are recreated — all for free,
+        without a separate "find what's here that shouldn't be" pass for
+        orphan removal.
+
+        Both search_tag and obj.delete() failures are wrapped as
+        BuilderError with context (file path, dbref where applicable). A
+        failure here aborts the whole build before any new object is
+        created, so the no-partial-state invariant holds even when
+        cleanup itself fails.
+        """
         # Lazy import — Evennia must be bootstrapped before this fires.
         from evennia.utils.search import search_tag
 
@@ -579,11 +749,26 @@ class Builder:
                 self.deleted_count += 1
 
     def _apply_aliases(self, obj, entity: LoadedEntity) -> None:
+        """Add each content["aliases"] string via obj.aliases.add().
+
+        No-op when the field is absent or empty. The Validator's
+        _check_aliases_field_shape predicate has already guaranteed the
+        field is a list of non-empty strings if present.
+        """
         content = entity.content if isinstance(entity.content, dict) else {}
         for alias in content.get("aliases", []):
             obj.aliases.add(alias)
 
     def _apply_locks(self, obj, entity: LoadedEntity) -> None:
+        """Add content["locks"] via obj.locks.add(), if present.
+
+        Evennia's lock system parses the semicolon-joined
+        <lock>:<func()> clauses and adds/updates each named lock; locks
+        not mentioned in the YAML keep their typeclass defaults — this is
+        partial-update behaviour, not replace-all-locks. The Validator's
+        _check_locks_field_shape predicate has already guaranteed the
+        field is a non-empty string if present.
+        """
         content = entity.content if isinstance(entity.content, dict) else {}
         lockstring = content.get("locks")
         if lockstring is None:
@@ -591,7 +776,18 @@ class Builder:
         obj.locks.add(lockstring)
 
     def _apply_attributes(self, obj, entity: LoadedEntity) -> None:
-        # YAML attributes overwrite typeclass at_object_creation defaults.
+        """Add each content["attributes"] record via obj.attributes.add().
+
+        YAML wins over typeclass defaults: because this runs after
+        create_object, an attribute with the same key as one set in
+        at_object_creation (or backed by an AttributeProperty descriptor)
+        overrides the default — typeclass declares defaults, YAML
+        overrides per-instance. Value can be any YAML type (Evennia's
+        attribute store handles arbitrary serialisable Python values; the
+        Validator does no type check on value). Category is optional —
+        when omitted, the attribute uses Evennia's default (uncategorised)
+        category.
+        """
         content = entity.content if isinstance(entity.content, dict) else {}
         for attr in content.get("attributes", []):
             obj.attributes.add(
@@ -599,6 +795,17 @@ class Builder:
             )
 
     def _apply_tags(self, obj, entity: LoadedEntity) -> None:
+        """Add each content["tags"] entry, then the auto-set deployment pair.
+
+        Author tags first: each entry normalised to (key, category) via
+        _normalise_tag, then added via obj.tags.add(). Then the
+        deployment-identity pair is always appended last —
+        wb_deployment_file and wb_deployment_id. The wb_* category prefix
+        is reserved for library-controlled tags; the Validator's
+        _check_tags_no_reserved_category predicate rejects any author tag
+        using a wb_* category, so the auto-set pair can't collide. Adding
+        the auto-set pair last keeps it the final word about identity.
+        """
         content = entity.content if isinstance(entity.content, dict) else {}
         for tag in content.get("tags", []):
             key, category = _normalise_tag(tag)
@@ -643,6 +850,18 @@ class Builder:
 
 
 def _normalise_tag(tag) -> tuple[str, str | None]:
+    """Turn a YAML tag entry into (key, category).
+
+    Shorthand string -> (string, None), Evennia's default category. Dict
+    form {key, category?} -> (tag["key"], tag.get("category")). The
+    Validator's _check_tags_field_shape predicate has already rejected
+    anything else by the time we reach this code, so this function trusts
+    shape.
+
+    A free function (not a method) because it doesn't depend on Builder
+    state — keeping it module-scoped makes it independently testable and
+    reusable if other components ever need the same normalisation.
+    """
     if isinstance(tag, str):
         return tag, None
     return tag["key"], tag.get("category")
