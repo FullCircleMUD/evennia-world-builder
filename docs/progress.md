@@ -2,6 +2,10 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-08-15 — Published to PyPI as `evennia-world-builder` 0.1.0
+
+First public release: https://pypi.org/project/evennia-world-builder/0.1.0/. Prep added `pyproject.toml` packaging metadata (classifiers, keywords, project URLs, a `dev` optional-dependencies group) and converted every `README.md` link to an absolute GitHub URL — PyPI renders the README standalone, with no repo file tree behind it, so relative links that work fine on GitHub would 404 there. Also undid the co-located `builder.md` experiment (extracting `builder.py`'s implementation documentation into a sibling `.md` file, found less desirable than commenting in-source): the content was relocated back into `builder.py`'s docstrings and comments with no code-logic changes, verified via `git diff` and a full 409-test rerun, and the file deleted. Built with `python -m build`, verified via `twine check` and a clean-room `pip install` into a fresh venv before upload. Tagged `v0.1.0`.
+
 ## 2026-08-09 — `wb_build` confined to its owning shard
 
 `wb_build` now refuses, before dispatch, when the process is not the one that owns the scope: `all` is refused on a sharded deployment, the query must start with `shard=`, and the named shard must match `get_shard_id()`. The router's `SHARD_ID` is mandated `"router"`, so it fails the match without needing a role check — which is what stops a build there creating rooms with no shard stamp. A fourth check runs once `definitions.yaml` is parsed: `shard` must be the first declared level, the only enforcement of that mandate.
