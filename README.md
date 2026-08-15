@@ -6,7 +6,7 @@ World content (rooms, exits, fixtures, descriptions) is expressed as data; an id
 
 ## Status
 
-**v0 feature-complete.** Single-entity build, `contents:` recursion, `exits:` recursion, same-file and cross-file cross-references, cross-file rebuild-dependency restoration via `incoming_exits:`, and cross-entity attribute references via `links:` all working end-to-end. The canonical YAML file shape ("shape 3" — top-level mapping with `entities:` key) lets authors mix multiple rooms with file-level metadata in one file. Surgical rebuilds (`wb_build zone=X room=Y`) keep cross-file exits alive automatically — operators can rebuild a single file without rebuilding everything that references it. See [docs/progress.md](docs/progress.md) for the running milestone log.
+**Feature-complete.** Single-entity build, `contents:` recursion, `exits:` recursion, same-file and cross-file cross-references, cross-file rebuild-dependency restoration via `incoming_exits:`, and cross-entity attribute references via `links:` all working end-to-end. The canonical YAML file shape ("shape 3" — top-level mapping with `entities:` key) lets authors mix multiple rooms with file-level metadata in one file. Surgical rebuilds (`wb_build zone=X room=Y`) keep cross-file exits alive automatically — operators can rebuild a single file without rebuilding everything that references it. A `wb_at_post_build` typeclass hook lets consumers derive state after the library's apply pipeline finishes. 409 tests green, live-verified on a two-process sharded deployment. See [docs/progress.md](docs/progress.md) for the running milestone log.
 
 ## What's working today
 
@@ -42,10 +42,19 @@ The library is Evennia-flavored and primarily intended for use on **[FullCircleM
 
 ## Install
 
-The package isn't on PyPI yet. Install directly from git:
+```
+pip install evennia-world-builder
+```
+
+Editable install for development against a checkout:
 
 ```
-pip install git+https://github.com/FullCircleMUD/evennia-world-builder.git@main
+git clone https://github.com/FullCircleMUD/evennia-world-builder.git
+cd evennia-world-builder
+python -m venv venv
+# Activate the venv (platform-specific)
+pip install -e .
+python runtests.py
 ```
 
 Then in your gamedir's `settings.py`:
