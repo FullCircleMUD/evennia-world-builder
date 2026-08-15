@@ -10,11 +10,36 @@ readme = "README.md"
 license = {text = "BSD-3-Clause"}
 authors = [{name = "Tim Baird"}]
 requires-python = ">=3.10"
+keywords = ["evennia", "yaml", "mud", "world-building", "content"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment :: Multi-User Dungeons (MUD)",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "evennia",
     "pyyaml",
     "evennia-yaml-reader",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/FullCircleMUD/evennia-world-builder"
+Repository = "https://github.com/FullCircleMUD/evennia-world-builder"
+Issues = "https://github.com/FullCircleMUD/evennia-world-builder/issues"
 
 [project.scripts]
 wb-validate = "evennia_world_builder.cli:_validate_main"
