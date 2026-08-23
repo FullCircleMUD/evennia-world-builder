@@ -2,6 +2,20 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-08-23 — Identity converted to `file_id` + `entity_id`
+
+Every entity now declares a UUID `entity_id`; every entity file declares a UUID `file_id`. References — `location:`, `destination:`, `home:`, `incoming_exits:` entries, and a `links:` entry's `entity` / `points_to` — are a bare scalar naming the target's `entity_id` and nothing else. Neither identifier is derived from a path, which is the whole point: renaming or moving a file no longer orphans its objects, and moving an entity between files no longer requires editing anything that points at it.
+
+What changed under the covers: the Validator's per-file id index became a repo-wide `{entity_id: file path}` map that `validate()` returns and the Builder carries — with a reference naming no file, that index is the only route from a registered dependency back to the YAML declaring it. Uniqueness is repo-wide rather than per-file, and duplicate `file_id` detection is new: cleanup sweeps on `file_id`, so a copied file would otherwise delete the original's objects. Cleanup keys on `file_id`, tags became `wb_file_id` / `wb_entity_id`, and `Builder._lookup_in_db` collapsed from fetch-a-file-then-filter-in-Python to one indexed query. `api.py`'s runtime lookups take a single `entity_id` and share the same single-join query.
+
+Landed alongside: the validation-gating mode is gone. `repo-ci-pre-validation` and `--force-validate` are removed and both are now *refused* rather than ignored, so a `definitions.yaml` still carrying the key fails to parse instead of silently claiming a mode that no longer exists. Every build validates the whole repo — the only scope at which cross-file references and repo-wide uniqueness are checkable at all, and the only way the returned index is complete when pass 3 needs it. If the walk ever becomes a bottleneck the fix belongs in the Reader (a bulk fetch), not in validating less.
+
+**404 unit tests green.** Verified end-to-end in the demo gamedir against the converted content repo: `wb_build all` builds 14 objects; a scoped `wb_build zone=millholm room=bakery` rebuilds 11 (10 declared + one restored by pass 3), with the restored exit correctly tagged with its *canonical* file's id rather than the rebuilding file's; `wb_lookup_object` resolves; both door links and the subscript-path link survive the partial rebuild.
+
+That last one only survived after a fixture fix — the subscript link was declared solely in `inn.yaml` while its target lives in `bakery.yaml`, so rebuilding the bakery destroyed the target and left the inn's attribute reading `None`. Exactly the failure the declare-in-both-files convention in [links.md](links.md) exists to prevent, and it took a live scoped rebuild to surface it.
+
+See [deployment-identity.md](deployment-identity.md).
+
 ## 2026-08-15 — Published to PyPI as `evennia-world-builder` 0.1.0
 
 First public release: https://pypi.org/project/evennia-world-builder/0.1.0/. Prep added `pyproject.toml` packaging metadata (classifiers, keywords, project URLs, a `dev` optional-dependencies group) and converted every `README.md` link to an absolute GitHub URL — PyPI renders the README standalone, with no repo file tree behind it, so relative links that work fine on GitHub would 404 there. Also undid the co-located `builder.md` experiment (extracting `builder.py`'s implementation documentation into a sibling `.md` file, found less desirable than commenting in-source): the content was relocated back into `builder.py`'s docstrings and comments with no code-logic changes, verified via `git diff` and a full 409-test rerun, and the file deleted. Built with `python -m build`, verified via `twine check` and a clean-room `pip install` into a fresh venv before upload. Tagged `v0.1.0`.

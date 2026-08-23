@@ -126,7 +126,7 @@ Same Validator, two output channels.
 | 3 — Evennia-runtime | `_check_destination_forbidden_for_non_exit_typeclass` | typeclass does NOT inherit from `DefaultExit` but `destination:` is set |
 | 4 — Reference | `_check_cross_refs` (post-loop phase) | any `location:`, `destination:` or `home:` reference (per-entity), `incoming_exits[N]` (file-level), or `links[N].entity` / `links[N].points_to` (file-level) whose `entity_id` isn't in the index built during the per-entity pass. All categories share the same `_check_one_cross_ref` helper. Null `home:` values are skipped (meaningful, not malformed). |
 
-All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader now synthesises `content["location"]` as a cross-ref dict on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
+All Tier 1 / Tier 2 predicates run on every entity uniformly — top-level and nested alike. The validator's earlier `TOP_LEVEL_PREDICATES` split (location-only-required-on-top-level) was collapsed when the Loader landed `contents:` recursion: since the Loader synthesises `content["location"]` as a reference on every nested entity at flatten time, `_check_location_well_formed` passes uniformly without needing a tier split. `_check_no_author_location_on_nested` gates on the LoadedEntity's `is_nested` flag directly.
 
 ### Mandatory fields
 

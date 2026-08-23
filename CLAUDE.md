@@ -49,7 +49,6 @@ Areas where scope questions are likely to need explicit decisions (TBD when they
 
 - Where the library / consumer boundary lies for operator commands and admin surface
 - Library involvement (if any) in player evacuation and in-flight state during apply
-- How identity strategy is communicated from consumer to library
 - Library involvement (if any) in CI / deployment tooling for consumer content repos
 
 ## Working conventions

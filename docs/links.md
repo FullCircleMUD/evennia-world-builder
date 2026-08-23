@@ -139,7 +139,7 @@ Quoting note: subscript-path strings contain `[` which YAML interprets as flow-s
 
 `links:` validation slots into the existing predicate-tier architecture (see [validator.md](validator.md)):
 
-- **Tier 1 (stateless, always run).** Each link entry has `entity`, `attribute`, `points_to` of correct types; `entity` and `points_to` are well-formed cross-ref dicts; `attribute` is a non-empty string (the same string check covers both the bare-name and subscript-path forms — path syntax is parsed at build time, not validated at validator time); `category` if present is a string. Findings list bad shape with the file path and the link's index in the list.
+- **Tier 1 (stateless, always run).** Each link entry has `entity`, `attribute`, `points_to` of correct types; `entity` and `points_to` are well-formed references; `attribute` is a non-empty string (the same string check covers both the bare-name and subscript-path forms — path syntax is parsed at build time, not validated at validator time); `category` if present is a string. Findings list bad shape with the file path and the link's index in the list.
 
 - **Tier 2 (stateful per-file).** None — links don't introduce accumulating state beyond the entity index.
 
@@ -177,7 +177,7 @@ If pass 4 ran between passes 2 and 3, links pointing at incoming-exits-restored 
 
 ### Failure mode
 
-Any unresolved cross-ref in a link raises `BuilderError` with the link's source file, its index in the `links:` list, the unresolved field (`entity` or `points_to`), and the cross-ref dict. No partial apply — the build refuses.
+Any unresolved reference in a link raises `BuilderError` with the link's source file, its index in the `links:` list, the unresolved field (`entity` or `points_to`), and the id that didn't resolve. No partial apply — the build refuses.
 
 ## Cross-file convention
 

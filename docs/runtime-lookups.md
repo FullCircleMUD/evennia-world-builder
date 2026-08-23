@@ -66,7 +66,7 @@ The two paths could converge if Builder's lookup were ported to the same indexed
 ## Out of scope (deferred)
 
 - **Bulk lookups** (`wb_lookup_dbrefs(file_id)` → every dbref from one file). Would let consumers enumerate "every room in this zone"-style queries. Mechanism is straightforward — query `wb_file_id` instead — but no concrete consumer need yet.
-- **Reverse lookup** (object → identity pair). The data lives on `obj.tags` already; ergonomics question is whether a helper is worth shipping.
+- **Reverse lookup** (object → `entity_id`). The data lives on `obj.tags` already; ergonomics question is whether a helper is worth shipping.
 - **Caching layer.** The query is fast enough that adding a cache would just introduce invalidation problems on rebuild. Reconsider if profiling ever shows it dominating a hot path.
 - **`AccountDB` / `ScriptDB` variants.** The library only creates objects today. If `Account` or `Script` creation ever lands, these helpers grow siblings on the appropriate model.
 

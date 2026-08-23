@@ -128,7 +128,7 @@ For each nested mapping, before emitting the LoadedEntity, the Loader:
 1. Records `had_author_location = "location" in mapping` against the *original* YAML.
 2. Synthesises `mapping["location"] = <parent's entity_id>`, overwriting whatever the author wrote.
 
-This unifies the `location:` shape across top-level and nested entities (both are now either `null` or a cross-ref dict), letting the validator and Builder treat them uniformly. The validator separately refuses author-written `location:` on a nested entity via `had_author_location` so the overwrite is never silent. See [deployment-identity.md](deployment-identity.md#loader-synthesis) for the synthesis rationale and [validator.md](validator.md) for the predicate.
+This unifies the `location:` shape across top-level and nested entities (both are either `null` or a reference), letting the validator and Builder treat them uniformly. The validator separately refuses author-written `location:` on a nested entity via `had_author_location` so the overwrite is never silent. See [deployment-identity.md](deployment-identity.md#loader-synthesis) for the synthesis rationale and [validator.md](validator.md) for the predicate.
 
 Defensive about malformed input: a non-list `contents:` or `exits:` value is silently ignored (skip recursion); a non-mapping child within either list is skipped. No errors raised at load time — the validator's existing field-shape predicates catch malformed entity bodies, and authoring tools surface YAML structure problems upstream.
 
