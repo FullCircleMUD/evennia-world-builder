@@ -6,7 +6,7 @@ Predicate tiers (see docs/validator.md for the full architecture):
 - **Tier 1 — stateless predicates** (``PER_ENTITY_PREDICATES``): pure
   ``(entity) -> finding | None``. Always run.
 - **Tier 2 — stateful per-file checks**: methods that read/update
-  ``self.seen_ids`` during the pass. Always run (only on entities that
+  ``self.entity_paths`` during the pass. Always run (only on entities that
   passed Tier 1, to avoid recording garbage).
 - **Tier 3 — Evennia-runtime predicates** (``EVENNIA_ONLY_PREDICATES``):
   stateless predicates that need the consumer's typeclasses + Evennia
@@ -15,7 +15,7 @@ Predicate tiers (see docs/validator.md for the full architecture):
   passes True; ``wb-validate`` (CLI) leaves it False.
 - **Tier 4 — cross-ref resolution** (``_check_cross_refs``): a deferred
   phase after the per-entity loop that resolves cross-references against
-  the fully-built ``seen_ids`` index. Runs only when the caller passes
+  the fully-built entity index. Runs only when the caller passes
   ``resolve_cross_refs=True`` to ``Validator.__init__``.
 
 All findings are appended to ``self.messages``; errors are also tracked
@@ -31,42 +31,55 @@ it from the per-entity loop.
 """
 import ast
 import importlib
+import uuid
 
 from .definitions import Definitions
 from .errors import ValidatorError
 from .loader import LoadedEntity
 
 
-def _check_deployment_id_well_formed(entity: LoadedEntity) -> str | None:
-    """Every entity must declare deployment_id as a non-negative integer.
+def _is_well_formed_id(value) -> bool:
+    """True iff ``value`` is a string parseable as a UUID.
+
+    Identity values are opaque to everything downstream — nothing reads
+    structure out of them. Parsing is a typo guard: a truncated or
+    hand-mangled id fails here rather than silently becoming a distinct
+    identity that resolves against nothing.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
+def _check_entity_id_well_formed(entity: LoadedEntity) -> str | None:
+    """Every entity must declare ``entity_id`` as a UUID.
 
     The field is the load-bearing handle for the deployment-identity
     contract (see docs/deployment-identity.md). Without it, neither
-    cleanup nor cross-references can resolve.
+    cleanup nor references can resolve. Uniqueness is repo-wide and
+    checked in Tier 2, not here.
     """
     content = entity.content if isinstance(entity.content, dict) else {}
 
-    if "deployment_id" not in content:
-        return f"{entity.path}: missing required field 'deployment_id'"
+    if "entity_id" not in content:
+        return f"{entity.path}: missing required field 'entity_id'"
 
-    value = content["deployment_id"]
-    # bool is a subclass of int in Python — exclude it explicitly so that
-    # `deployment_id: true` doesn't slip through as a valid integer.
-    if not isinstance(value, int) or isinstance(value, bool):
+    value = content["entity_id"]
+    if not _is_well_formed_id(value):
         return (
-            f"{entity.path}: 'deployment_id' must be an integer, "
-            f"got {type(value).__name__}"
+            f"{entity.path}: 'entity_id' must be a UUID string, got {value!r}"
         )
-
-    if value < 0:
-        return f"{entity.path}: 'deployment_id' must be non-negative, got {value}"
 
     return None
 
 
 # Tag categories starting with this prefix are reserved for the library
-# (currently `wb_deployment_file` and `wb_deployment_id`, set automatically
-# by the Builder). Authors can't use them in YAML — see docs/deployment-identity.md.
+# (`wb_file_id` and `wb_entity_id`, set automatically by the Builder).
+# Authors can't use them in YAML — see docs/deployment-identity.md.
 _RESERVED_TAG_CATEGORY_PREFIX = "wb_"
 
 
@@ -123,7 +136,7 @@ def _check_tags_no_reserved_category(entity: LoadedEntity) -> str | None:
     """Tier 1: author tags must not use categories reserved by the library.
 
     Categories starting with ``wb_`` are reserved for tags the Builder
-    sets automatically (e.g. ``wb_deployment_file``, ``wb_deployment_id``).
+    sets automatically (``wb_file_id``, ``wb_entity_id``).
     An author writing one of these in YAML would collide with the
     auto-set value — explicit refusal beats silent overwrite.
 
@@ -176,8 +189,6 @@ def _check_name_well_formed(entity: LoadedEntity) -> str | None:
     return None
 
 
-_CROSS_REF_KEYS = ("deployment_file", "deployment_id")
-
 # A link entry's full key set. `entity`, `attribute`, `points_to` are
 # required; `category` is optional. Anything else is rejected as an
 # unexpected key. See docs/links.md for the spec.
@@ -186,56 +197,24 @@ _LINK_OPTIONAL_KEYS = ("category",)
 _LINK_ALL_KEYS = _LINK_REQUIRED_KEYS + _LINK_OPTIONAL_KEYS
 
 
-def _check_cross_ref_dict_shape(value, entity_path: str, field_name: str) -> str | None:
-    """Validate that a value is a strict ``{deployment_file, deployment_id}`` dict.
+def _check_reference_shape(value, entity_path: str, field_name: str) -> str | None:
+    """Validate that a value is a well-formed reference — a target ``entity_id``.
 
-    Caller has already established that ``value`` is a dict (the
-    null-or-other-shape decision is field-specific and stays in the
-    calling predicate). This helper just enforces the strict shape:
-    both keys required, no extras, ``deployment_file`` a non-empty
-    string, ``deployment_id`` a non-negative integer (``bool`` excluded).
+    Every reference site in the YAML uses this one shape: ``location:``,
+    ``destination:``, ``home:``, ``incoming_exits:`` entries, and a
+    ``links:`` entry's ``entity`` / ``points_to``. A reference names no
+    file, which is what lets an entity move between files without
+    editing anything that points at it (see docs/deployment-identity.md).
 
-    Used by ``_check_location_well_formed`` and
-    ``_check_destination_well_formed`` — both fields carry cross-ref
-    dicts with identical structure, only the per-field "what counts as
-    valid" decision differs.
+    Caller has already made the field-specific null decision; this
+    helper only checks the value itself. Whether the target *exists* is
+    Tier 4's job, not this one's.
     """
-    expected = set(_CROSS_REF_KEYS)
-    actual = set(value)
-    missing = expected - actual
-    if missing:
+    if not _is_well_formed_id(value):
         return (
-            f"{entity_path}: '{field_name}' cross-ref missing required key(s): "
-            f"{sorted(missing)}"
+            f"{entity_path}: '{field_name}' must be a reference "
+            f"(the target's entity_id, a UUID string), got {value!r}"
         )
-    extra = actual - expected
-    if extra:
-        return (
-            f"{entity_path}: '{field_name}' cross-ref has unexpected key(s): "
-            f"{sorted(extra)}"
-        )
-
-    deployment_file = value["deployment_file"]
-    if not isinstance(deployment_file, str) or not deployment_file.strip():
-        return (
-            f"{entity_path}: '{field_name}' cross-ref 'deployment_file' "
-            f"must be a non-empty string"
-        )
-
-    deployment_id = value["deployment_id"]
-    # bool is an int subclass — reject it explicitly so {deployment_id: true}
-    # doesn't slip through as a valid integer.
-    if not isinstance(deployment_id, int) or isinstance(deployment_id, bool):
-        return (
-            f"{entity_path}: '{field_name}' cross-ref 'deployment_id' "
-            f"must be an integer, got {type(deployment_id).__name__}"
-        )
-    if deployment_id < 0:
-        return (
-            f"{entity_path}: '{field_name}' cross-ref 'deployment_id' "
-            f"must be non-negative, got {deployment_id}"
-        )
-
     return None
 
 
@@ -300,13 +279,12 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     Two valid shapes:
 
     - ``null`` — orphan placement (the dominant case for top-level rooms).
-    - ``{deployment_file: <str>, deployment_id: <non-negative int>}`` — a
-      cross-reference dict pointing at the entity that contains this one.
-      The Loader synthesises this shape on every nested entity (a child
+    - a reference — the ``entity_id`` of the entity that contains this
+      one. The Loader synthesises this on every nested entity (a child
       of a ``contents:`` or ``exits:`` block), pointing at the immediate
       parent; top-level entities can also declare it directly to place
-      themselves inside another entity (resolution against the
-      ``seen_ids`` index lands as a separate Tier 4 check when it does).
+      themselves inside another entity. Resolution against the entity
+      index is Tier 4.
 
     Why mandate the field even when the value can be null? Without an
     explicit declaration, an author who forgets the field can't tell
@@ -321,24 +299,17 @@ def _check_location_well_formed(entity: LoadedEntity) -> str | None:
     if value is None:
         return None
 
-    if not isinstance(value, dict):
-        return (
-            f"{entity.path}: 'location' must be null or a cross-ref dict "
-            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
-        )
-
-    return _check_cross_ref_dict_shape(value, entity.path, "location")
+    return _check_reference_shape(value, entity.path, "location")
 
 
 def _check_destination_well_formed(entity: LoadedEntity) -> str | None:
-    """Tier 1: ``destination:`` (when present) is a cross-ref dict.
+    """Tier 1: ``destination:`` (when present) is a reference.
 
     Optional field — absence is fine (it just means the entity is not an
-    exit). When present, must be a strict ``{deployment_file,
-    deployment_id}`` cross-ref dict. The dict shape is identical to
-    ``location:``'s cross-ref shape; the difference between the two
-    fields is that ``location:`` accepts null (orphan) while
-    ``destination:`` does not (an exit always points somewhere).
+    exit). When present, must be the target's ``entity_id``. Same shape
+    as ``location:``; the difference between the two fields is that
+    ``location:`` accepts null (orphan) while ``destination:`` does not
+    (an exit always points somewhere).
 
     The "is the entity actually meant to be an exit" question — i.e. is
     it inconsistent for this typeclass to have / lack a destination — is
@@ -349,14 +320,9 @@ def _check_destination_well_formed(entity: LoadedEntity) -> str | None:
     if "destination" not in content:
         return None
 
-    value = content["destination"]
-    if not isinstance(value, dict):
-        return (
-            f"{entity.path}: 'destination' must be a cross-ref dict "
-            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
-        )
-
-    return _check_cross_ref_dict_shape(value, entity.path, "destination")
+    return _check_reference_shape(
+        content["destination"], entity.path, "destination",
+    )
 
 
 def _check_home_well_formed(entity: LoadedEntity) -> str | None:
@@ -367,9 +333,8 @@ def _check_home_well_formed(entity: LoadedEntity) -> str | None:
 
     - ``null`` — translates to ``nohome=True`` at create_object time;
       the resulting object's ``home`` field is ``None``.
-    - ``{deployment_file: <str>, deployment_id: <non-negative int>}`` —
-      cross-ref dict pointing at the entity that should serve as this
-      object's home. Same identity scheme as ``location:`` /
+    - a reference — the ``entity_id`` of the entity that should serve
+      as this object's home. Same identity scheme as ``location:`` /
       ``destination:``; same Tier 4 resolution path.
 
     The Builder translates the YAML field into the appropriate
@@ -383,13 +348,7 @@ def _check_home_well_formed(entity: LoadedEntity) -> str | None:
     if value is None:
         return None
 
-    if not isinstance(value, dict):
-        return (
-            f"{entity.path}: 'home' must be null or a cross-ref dict "
-            f"{{deployment_file, deployment_id}}, got {type(value).__name__}"
-        )
-
-    return _check_cross_ref_dict_shape(value, entity.path, "home")
+    return _check_reference_shape(value, entity.path, "home")
 
 
 def _check_location_not_null_when_destination_present(entity: LoadedEntity) -> str | None:
@@ -742,10 +701,18 @@ class Validator:
         errors:   subset of messages corresponding to actual errors.
                   Empty after a clean run; non-empty implies validate()
                   raised ValidatorError.
-        seen_ids: ``{deployment_file: set(deployment_ids)}`` —
-                  accumulated as the per-entity loop runs. Used for
-                  in-pass duplicate detection and (eventually) backward
-                  cross-reference resolution.
+        entity_paths:
+                  ``{entity_id: file path}`` — the entity index,
+                  accumulated as the per-entity loop runs and returned
+                  by ``validate()``. Serves duplicate detection (a
+                  second claim on an id is a collision on insert), Tier
+                  4 reference resolution, and the Builder, which needs
+                  it to locate an entity's canonical file when a
+                  registered dependency is missing from the database.
+        file_ids: ``{file_id: file path}`` — the same idea one level up.
+                  Its job is catching a copied file: a duplicated
+                  ``file_id`` means rebuilding the copy would sweep the
+                  original's objects.
     """
 
     # Stateless predicates that fire on every entity, top-level or nested.
@@ -759,7 +726,7 @@ class Validator:
     # `_check_no_author_location_on_nested` gates on the LoadedEntity's
     # is_nested flag directly, no tier split needed.
     PER_ENTITY_PREDICATES = (
-        _check_deployment_id_well_formed,
+        _check_entity_id_well_formed,
         _check_name_well_formed,
         _check_typeclass_well_formed,
         _check_location_well_formed,
@@ -791,7 +758,7 @@ class Validator:
         self.evennia_runtime = evennia_runtime
         # When True, run the Tier 4 deferred phase: walk every entity's
         # location/destination cross-refs and verify they resolve in the
-        # seen_ids index. Caller asserts they're passing whole-repo
+        # entity index. Caller asserts they're passing whole-repo
         # entities (the only case where unresolved-ref findings are
         # meaningful). wb_build pre-validation and wb-validate both
         # pass True; tests default False to keep narrow-scope cases
@@ -805,15 +772,20 @@ class Validator:
         self.file_metadata: dict = dict(file_metadata or {})
         self.messages: list[str] = []
         self.errors: list[str] = []
-        self.seen_ids: dict[str, set[int]] = {}
+        self.entity_paths: dict[str, str] = {}
+        self.file_ids: dict[str, str] = {}
 
-    def validate(self, entities: list) -> list:
+    def validate(self, entities: list) -> dict:
         """Run all checks against every entity. Raise on findings.
 
-        Returns the entities unchanged on a clean run. Raises
-        ValidatorError after the full pass if any check failed —
-        callers should still read self.messages to surface the
-        complete list of findings to the operator.
+        Returns the entity index — ``{entity_id: file path}`` — on a
+        clean run. The Builder carries it through: a reference names no
+        file, so the index is the only way to get from a registered
+        dependency back to the YAML that declares it.
+
+        Raises ValidatorError after the full pass if any check failed —
+        callers should still read self.messages to surface the complete
+        list of findings to the operator.
         """
         self.messages.append(f"VALIDATOR: {self.definitions}")
 
@@ -821,12 +793,13 @@ class Validator:
             stateless_clean = self._run_stateless_predicates(entity)
             if not stateless_clean:
                 # Skip stateful checks — they would operate on bad data
-                # (e.g. trying to record a non-integer in seen_ids).
+                # (e.g. indexing an entity whose id is malformed).
                 continue
-            self._check_and_record_unique_id(entity)
+            self._check_and_record_entity_id(entity)
 
         # File-level shape checks (run once per file, regardless of
         # how many entities were declared in it).
+        self._check_file_ids(entities)
         self._check_file_metadata_shape()
 
         if self.resolve_cross_refs:
@@ -838,7 +811,7 @@ class Validator:
                 f"{n} validation error{'s' if n != 1 else ''} — see messages"
             )
 
-        return entities
+        return dict(self.entity_paths)
 
     def _record_finding(self, finding: str) -> None:
         """All findings flow through here so accumulation stays uniform."""
@@ -866,6 +839,46 @@ class Validator:
                 clean = False
         return clean
 
+    def _check_file_ids(self, entities: list) -> None:
+        """File-level Tier 1+2 — every entity file declares a unique ``file_id``.
+
+        Scope comes from the entities rather than from
+        ``self.file_metadata``: a file only appears in the metadata dict
+        if it declared at least one file-level key, so a file that
+        omitted ``file_id`` entirely would be invisible there. Walking
+        the entity paths means the check sees every file that actually
+        produced something.
+
+        ``file_id`` is what cleanup sweeps on, so a duplicate is the
+        copied-file failure: rebuilding the copy would delete the
+        original's objects. Both paths are named in the finding, since
+        neither is more at fault than the other.
+        """
+        # dict.fromkeys rather than a set — findings stay in load order.
+        for path in dict.fromkeys(entity.path for entity in entities):
+            meta = self.file_metadata.get(path)
+            meta = meta if isinstance(meta, dict) else {}
+
+            if "file_id" not in meta:
+                self._record_finding(f"{path}: missing required field 'file_id'")
+                continue
+
+            file_id = meta["file_id"]
+            if not _is_well_formed_id(file_id):
+                self._record_finding(
+                    f"{path}: 'file_id' must be a UUID string, got {file_id!r}"
+                )
+                continue
+
+            previous = self.file_ids.get(file_id)
+            if previous is not None:
+                self._record_finding(
+                    f"{path}: duplicate file_id={file_id} "
+                    f"(also declared by {previous})"
+                )
+                continue
+            self.file_ids[file_id] = path
+
     def _check_file_metadata_shape(self) -> None:
         """File-level Tier 1 — shape-check ``incoming_exits:`` per file.
 
@@ -876,9 +889,8 @@ class Validator:
         once, regardless of how many entities it contained.
 
         For each path in ``file_metadata`` with an ``incoming_exits:``
-        entry: must be a list of strict ``{deployment_file,
-        deployment_id}`` cross-ref dicts (same shape as ``location:`` /
-        ``destination:``, via the shared helper). Findings name the
+        entry: must be a list of references (same shape as ``location:``
+        / ``destination:``, via the shared helper). Findings name the
         path and the array index for easy author location.
         """
         for path, meta in self.file_metadata.items():
@@ -902,15 +914,7 @@ class Validator:
             )
             return
         for index, ref in enumerate(value):
-            prefix = f"{path}: incoming_exits[{index}]"
-            if not isinstance(ref, dict):
-                self._record_finding(
-                    f"{prefix}: must be a cross-ref dict "
-                    f"{{deployment_file, deployment_id}}, "
-                    f"got {type(ref).__name__}"
-                )
-                continue
-            finding = _check_cross_ref_dict_shape(
+            finding = _check_reference_shape(
                 ref, path, f"incoming_exits[{index}]",
             )
             if finding is not None:
@@ -921,10 +925,9 @@ class Validator:
 
         Each entry must have ``entity``, ``attribute``, ``points_to``
         (required) and may have ``category`` (optional). ``entity`` and
-        ``points_to`` are ``{deployment_file, deployment_id}`` cross-ref
-        dicts; ``attribute`` and ``category`` are non-empty strings.
-        Findings name the path and array index for easy author location.
-        See docs/links.md.
+        ``points_to`` are references; ``attribute`` and ``category`` are
+        non-empty strings. Findings name the path and array index for
+        easy author location. See docs/links.md.
         """
         if "links" not in meta:
             return
@@ -963,16 +966,8 @@ class Validator:
         for field in ("entity", "points_to"):
             if field not in link:
                 continue  # already flagged via missing-required
-            ref = link[field]
-            if not isinstance(ref, dict):
-                self._record_finding(
-                    f"{prefix}: '{field}' must be a cross-ref dict "
-                    f"{{deployment_file, deployment_id}}, "
-                    f"got {type(ref).__name__}"
-                )
-                continue
-            finding = _check_cross_ref_dict_shape(
-                ref, path, f"links[{index}].{field}",
+            finding = _check_reference_shape(
+                link[field], path, f"links[{index}].{field}",
             )
             if finding is not None:
                 self._record_finding(finding)
@@ -1012,31 +1007,31 @@ class Validator:
                 )
 
     def _check_cross_refs(self, entities: list) -> None:
-        """Tier 4: every cross-ref must resolve in the seen_ids index.
+        """Tier 4: every reference must resolve in the entity index.
 
-        Runs after the per-entity loop, when ``self.seen_ids`` reflects
-        every clean entity in the build set. Walks:
+        Runs after the per-entity loop, when ``self.entity_paths``
+        reflects every clean entity in the build set. Walks:
 
-        - ``content["location"]`` per entity (single cross-ref dict, optional)
-        - ``content["destination"]`` per entity (single cross-ref dict, optional)
+        - ``content["location"]`` per entity (optional)
+        - ``content["destination"]`` per entity (optional)
+        - ``content["home"]`` per entity (optional)
         - ``self.file_metadata[path]["incoming_exits"]`` per file
-          (list of cross-ref dicts, optional)
+        - ``self.file_metadata[path]["links"]`` entity / points_to
 
-        For each well-shaped ref, verifies the
-        ``(deployment_file, deployment_id)`` pair appears in
-        ``self.seen_ids``.
+        For each well-shaped reference, verifies the ``entity_id``
+        appears in ``self.entity_paths``.
 
-        Defensive about malformed shapes — ``isinstance(ref, dict)`` and
-        a key-presence check skip any cross-ref that Tier 1 has already
-        flagged. Tier 4 records one finding per unresolved well-shaped
-        ref; mistakes Tier 1 caught don't double-report here.
+        Defensive about malformed shapes — anything that isn't a
+        well-formed id is skipped, since Tier 1 has already flagged it.
+        Tier 4 records one finding per unresolved well-shaped reference;
+        mistakes Tier 1 caught don't double-report here.
 
         Same-file forward refs resolve correctly: by the time this
-        method runs, every entity has been added to ``seen_ids``
-        (regardless of YAML-file order), so a top-level entity declaring
-        ``location:`` to point at another entity later in the same file
-        will resolve. The Builder's same-file forward-ref refusal is a
-        separate decision at create time, not a validate-time concern.
+        method runs, every entity has been indexed regardless of
+        YAML-file order, so an entity declaring ``location:`` pointing
+        at another entity later in the same file will resolve. The
+        Builder's same-file forward-ref refusal is a separate decision
+        at create time, not a validate-time concern.
         """
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
@@ -1058,9 +1053,9 @@ class Validator:
                     )
 
             # File-level links — both `entity` and `points_to` are
-            # cross-refs that must resolve. Tier 1 has already filtered
+            # references that must resolve. Tier 1 has already filtered
             # out anything malformed; here we just check that whatever
-            # well-shaped refs remain land in seen_ids. See docs/links.md.
+            # well-shaped refs remain are in the index. See docs/links.md.
             links = meta.get("links")
             if isinstance(links, list):
                 for index, link in enumerate(links):
@@ -1073,42 +1068,38 @@ class Validator:
                         )
 
     def _check_one_cross_ref(self, source_path: str, ref, field_name: str) -> None:
-        """Verify a single cross-ref dict resolves in self.seen_ids.
+        """Verify a single reference resolves in self.entity_paths.
 
-        Defensive: silently skips non-dict values and dicts missing
-        either required key (Tier 1 has already flagged those). Records
-        a finding only for well-shaped refs whose target isn't in the
-        index — the operator gets one finding per real authoring
-        mistake, not several layered ones.
+        Defensive: silently skips anything that isn't a well-formed id
+        (Tier 1 has already flagged those). Records a finding only for
+        well-shaped references whose target isn't in the index — the
+        operator gets one finding per real authoring mistake, not
+        several layered ones.
         """
-        if not isinstance(ref, dict):
+        if not _is_well_formed_id(ref):
             return
-        if "deployment_file" not in ref or "deployment_id" not in ref:
-            return
-        target_file = ref["deployment_file"]
-        target_id = ref["deployment_id"]
-        if target_id not in self.seen_ids.get(target_file, set()):
+        if ref not in self.entity_paths:
             self._record_finding(
-                f"{source_path}: '{field_name}' cross-ref to "
-                f"(deployment_file={target_file!r}, deployment_id={target_id}) "
+                f"{source_path}: '{field_name}' reference to entity_id={ref} "
                 f"does not resolve to any entity in this build"
             )
 
-    def _check_and_record_unique_id(self, entity: LoadedEntity) -> None:
-        """Record the entity's deployment_id; flag if already seen for this file.
+    def _check_and_record_entity_id(self, entity: LoadedEntity) -> None:
+        """Index the entity by ``entity_id``; flag a second claim on one.
 
-        Maintains ``self.seen_ids[entity.path]`` as the running set of ids
-        observed for that file. Detection is "second-occurrence flags";
-        the originally-recorded entity is left alone so the operator can
-        find both by searching for the conflicting id within the named
-        file.
+        Maintains ``self.entity_paths`` as ``{entity_id: file path}``.
+        Uniqueness is repo-wide, not per-file — an id is the entity, so
+        two entities carrying the same one is a collision wherever they
+        live. Detection is "second-occurrence flags"; the first entry
+        stays in the index, and the finding names both files so a
+        duplicate created by copying a file is obvious from the message.
         """
-        deployment_id = entity.content["deployment_id"]
-        seen = self.seen_ids.setdefault(entity.path, set())
-        if deployment_id in seen:
+        entity_id = entity.content["entity_id"]
+        previous = self.entity_paths.get(entity_id)
+        if previous is not None:
             self._record_finding(
-                f"{entity.path}: duplicate deployment_id={deployment_id} "
-                f"(already declared elsewhere in this file)"
+                f"{entity.path}: duplicate entity_id={entity_id} "
+                f"(also declared by {previous})"
             )
             return
-        seen.add(deployment_id)
+        self.entity_paths[entity_id] = entity.path

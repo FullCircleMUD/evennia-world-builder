@@ -62,7 +62,7 @@ class LoadedEntity:
                    key has already been popped by the Loader so the body
                    doesn't carry duplicate child data; for nested entities
                    the Loader has also overwritten ``content["location"]``
-                   with a cross-ref dict pointing at the parent (see
+                   with the parent's ``entity_id`` (see
                    ``had_author_location`` for whether the author had
                    written a ``location:`` of their own).
         path:      Source file path, for diagnostic messages.
@@ -74,8 +74,8 @@ class LoadedEntity:
                    doesn't change that.
         had_author_location:
                    True iff the author wrote a ``location:`` key on this
-                   entity's YAML mapping (whether ``null``, a cross-ref
-                   dict, or anything else). Recorded *before* the Loader
+                   entity's YAML mapping (whether ``null``, a reference,
+                   or anything else). Recorded *before* the Loader
                    synthesises ``location:`` on nested entities so the
                    validator can later refuse author-written ``location:``
                    on a nested entity (where placement is implicit in the
@@ -221,13 +221,13 @@ class Loader:
         results = []
         for item in entity_list:
             results.extend(
-                self._flatten(item, path, location, is_nested=False, parent_deployment_id=None),
+                self._flatten(item, path, location, is_nested=False, parent_entity_id=None),
             )
         return results
 
     def _flatten(
         self, mapping, path: str, location: dict, is_nested: bool,
-        parent_deployment_id,
+        parent_entity_id,
     ) -> list:
         """Walk one entity and its ``contents:`` / ``exits:`` subtree depth-first pre-order.
 
@@ -244,10 +244,10 @@ class Loader:
 
         For nested entities the Loader records ``had_author_location``
         from the *original* mapping before any modification, then
-        unconditionally **synthesises** ``content["location"]`` as
-        ``{deployment_file: path, deployment_id: parent_deployment_id}``.
-        The synthesised dict overwrites whatever the author wrote (the
-        validator refuses the author's value via the recorded flag).
+        unconditionally **synthesises** ``content["location"]`` as the
+        parent's ``entity_id``. The synthesised value overwrites whatever
+        the author wrote (the validator refuses the author's value via
+        the recorded flag).
         Top-level entities are not synthesised — their ``location:`` is
         the author's responsibility, and ``_check_location_well_formed``
         enforces it.
@@ -280,10 +280,7 @@ class Loader:
         exits_children = body.pop("exits", None)
 
         if is_nested:
-            body["location"] = {
-                "deployment_file": path,
-                "deployment_id": parent_deployment_id,
-            }
+            body["location"] = parent_entity_id
 
         results = [LoadedEntity(
             location=dict(location),
@@ -293,7 +290,7 @@ class Loader:
             had_author_location=had_author_location,
         )]
 
-        my_deployment_id = mapping.get("deployment_id")
+        my_entity_id = mapping.get("entity_id")
         for children in (contents_children, exits_children):
             if not isinstance(children, list):
                 continue
@@ -303,7 +300,7 @@ class Loader:
                 results.extend(self._flatten(
                     child, path, location,
                     is_nested=True,
-                    parent_deployment_id=my_deployment_id,
+                    parent_entity_id=my_entity_id,
                 ))
 
         return results

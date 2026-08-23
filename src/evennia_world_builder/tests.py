@@ -7,6 +7,7 @@ correctly, and the manifest discovery + loading pipeline (Definitions,
 Finder, Loader) operates against synthetic in-memory fixtures.
 """
 import os
+import uuid
 from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ObjectDoesNotExist
@@ -37,6 +38,58 @@ from evennia_world_builder import (
     wb_lookup_dbref,
     wb_lookup_object,
 )
+
+
+def _uid(n: int) -> str:
+    """A deterministic UUID string for identity fixtures.
+
+    ``_uid(1)`` is ``'00000000-0000-0000-0000-000000000001'`` — readable
+    in a failure message, stable across runs, and distinct per ``n``.
+    Tests that previously used a small integer id use the same number
+    here, so a fixture's identity stays traceable.
+    """
+    return str(uuid.UUID(int=n))
+
+
+# Every path these tests author entities into. Each needs a file_id, since
+# a file that declares entities without one is a validation error.
+_FIXTURE_FILES = (
+    "a.yaml", "b.yaml", "c.yaml", "x.yaml", "bad.yaml", "ghost.yaml",
+    "bakery.yaml", "inn.yaml", "forest.yaml", "aethenveil.yaml",
+    "millholm/bakery.yaml", "millholm/inn.yaml", "millholm/x.yaml",
+)
+
+
+def _file_meta(path: str = "a.yaml", **extra) -> dict:
+    """Loader-style file_metadata carrying a valid ``file_id`` per path.
+
+    Covers every fixture path rather than only the one under test, so a
+    test that adds an entity in a second file doesn't have to think
+    about it. Entries for files with no entities are inert — the
+    ``file_id`` check walks entity paths, not this dict.
+
+    Extra file-level keys (``incoming_exits:``, ``links:``) attach to
+    ``path``, which is the shape these tests use: one file under test
+    declaring them.
+    """
+    meta = {p: {"file_id": _uid(0xF11E_0000 + index)}
+            for index, p in enumerate(_FIXTURE_FILES)}
+    if extra:
+        meta.setdefault(path, {"file_id": _uid(0xF11E_FFFF)}).update(extra)
+    return meta
+
+
+def _merge_file_meta(file_metadata: dict | None) -> dict:
+    """Overlay a test's own file-level keys on the standard file_id set.
+
+    Tests that exercise ``incoming_exits:`` / ``links:`` care about those
+    keys, not about identity — this keeps them from tripping the
+    every-file-declares-a-file_id check as a side effect.
+    """
+    merged = _file_meta()
+    for path, meta in (file_metadata or {}).items():
+        merged[path] = {**merged.get(path, {}), **meta}
+    return merged
 
 
 class FakeReader:
@@ -80,7 +133,7 @@ SCAFFOLD = {
     ]},
     "aethenveil.yaml": {"entities": [
         {
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "Sanctum",
             "location": None,
@@ -89,7 +142,7 @@ SCAFFOLD = {
     ]},
     "millholm/inn.yaml": {"entities": [
         {
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "The Crooked Lantern",
             "location": None,
@@ -98,7 +151,7 @@ SCAFFOLD = {
     ]},
     "millholm/bakery.yaml": {"entities": [
         {
-            "deployment_id": 2,
+            "entity_id": _uid(2),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "Goldencrust",
             "location": None,
@@ -629,7 +682,7 @@ class LoaderTest(TestCase):
         finder, loader = self._make()
         entities = loader.load(finder.find({"zone": "millholm", "room": "inn"})).entities
         self.assertEqual(entities[0].content, {
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "The Crooked Lantern",
             "location": None,
@@ -642,7 +695,7 @@ class LoaderTest(TestCase):
         # Builder to translate into create_object's nohome=True kwarg.
         # See docs/home.md (Validator/Builder downstream consume it).
         result = self._load_yaml_result({
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultObject",
             "name": "A fixture",
             "location": None,
@@ -651,19 +704,19 @@ class LoaderTest(TestCase):
         self.assertEqual(result.entities[0].content["home"], None)
 
     def test_loaded_entity_carries_home_field_cross_ref(self):
-        # `home: {deployment_file, deployment_id}` likewise rides through
+        # `home: {deployment_file, entity_id}` likewise rides through
         # entity.content untouched. Cross-ref resolution happens at
         # Builder time via the same `_resolve_cross_ref` location uses.
         result = self._load_yaml_result({
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultObject",
             "name": "A courier",
             "location": None,
-            "home": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "home": _uid(2),
         })
         self.assertEqual(
             result.entities[0].content["home"],
-            {"deployment_file": "x.yaml", "deployment_id": 2},
+            _uid(2),
         )
 
     def test_index_pointing_at_missing_file_raises(self):
@@ -719,8 +772,8 @@ class LoaderTest(TestCase):
         # Canonical shape: top-level mapping with `entities:` list.
         entities = self._load_with_raw_file_yaml({
             "entities": [
-                {"deployment_id": 1, "name": "A"},
-                {"deployment_id": 2, "name": "B"},
+                {"entity_id": _uid(1), "name": "A"},
+                {"entity_id": _uid(2), "name": "B"},
             ],
         })
         self.assertEqual(len(entities), 2)
@@ -734,7 +787,7 @@ class LoaderTest(TestCase):
         # Legacy shape 2 (top-level YAML list) is no longer supported.
         with self.assertRaises(LoaderInvalidShapeError):
             self._load_with_raw_file_yaml([
-                {"deployment_id": 1, "name": "A"},
+                {"entity_id": _uid(1), "name": "A"},
             ])
 
     def test_top_level_mapping_without_entities_refused(self):
@@ -742,7 +795,7 @@ class LoaderTest(TestCase):
         # longer supported — author must wrap in `entities:`.
         with self.assertRaises(LoaderInvalidShapeError):
             self._load_with_raw_file_yaml({
-                "deployment_id": 1, "name": "Solo",
+                "entity_id": _uid(1), "name": "Solo",
             })
 
     def test_entities_value_must_be_list(self):
@@ -765,21 +818,21 @@ class LoaderTest(TestCase):
     def test_file_metadata_empty_when_only_entities_key(self):
         # A file with just an entities: key produces no file_metadata.
         result = self._load_yaml_result({"entities": [
-            {"deployment_id": 1, "name": "A"},
+            {"entity_id": _uid(1), "name": "A"},
         ]})
         self.assertEqual(result.file_metadata, {})
 
     def test_file_metadata_extracts_incoming_exits(self):
         result = self._load_yaml_result({
-            "entities": [{"deployment_id": 1, "name": "A"}],
+            "entities": [{"entity_id": _uid(1), "name": "A"}],
             "incoming_exits": [
-                {"deployment_file": "millholm/inn.yaml", "deployment_id": 2},
+                _uid(2),
             ],
         })
         self.assertEqual(result.file_metadata, {
             "x.yaml": {
                 "incoming_exits": [
-                    {"deployment_file": "millholm/inn.yaml", "deployment_id": 2},
+                    _uid(2),
                 ],
             },
         })
@@ -793,13 +846,13 @@ class LoaderTest(TestCase):
                 {"name": "b", "kind": "file"},
             ]},
             "a.yaml": {
-                "entities": [{"deployment_id": 1, "name": "A"}],
+                "entities": [{"entity_id": _uid(1), "name": "A"}],
                 "incoming_exits": [
-                    {"deployment_file": "b.yaml", "deployment_id": 1},
+                    _uid(1),
                 ],
             },
             "b.yaml": {
-                "entities": [{"deployment_id": 1, "name": "B"}],
+                "entities": [{"entity_id": _uid(1), "name": "B"}],
                 # b.yaml has no file-level metadata
             },
         }
@@ -811,7 +864,7 @@ class LoaderTest(TestCase):
         self.assertNotIn("b.yaml", result.file_metadata)
         self.assertEqual(
             result.file_metadata["a.yaml"]["incoming_exits"],
-            [{"deployment_file": "b.yaml", "deployment_id": 1}],
+            [_uid(1)],
         )
 
     def test_file_metadata_extracts_links(self):
@@ -820,12 +873,12 @@ class LoaderTest(TestCase):
         # — shape validation and resolution happen downstream.
         # See docs/links.md.
         result = self._load_yaml_result({
-            "entities": [{"deployment_id": 1, "name": "A"}],
+            "entities": [{"entity_id": _uid(1), "name": "A"}],
             "links": [
                 {
-                    "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                    "entity": _uid(1),
                     "attribute": "other_side",
-                    "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+                    "points_to": _uid(2),
                 },
             ],
         })
@@ -833,9 +886,9 @@ class LoaderTest(TestCase):
             "x.yaml": {
                 "links": [
                     {
-                        "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                        "entity": _uid(1),
                         "attribute": "other_side",
-                        "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+                        "points_to": _uid(2),
                     },
                 ],
             },
@@ -846,7 +899,7 @@ class LoaderTest(TestCase):
         # unrecognised key sits in file_metadata; the Loader doesn't
         # complain and doesn't filter.
         result = self._load_yaml_result({
-            "entities": [{"deployment_id": 1, "name": "A"}],
+            "entities": [{"entity_id": _uid(1), "name": "A"}],
             "future_extension_key": {"some": "value"},
         })
         self.assertEqual(
@@ -860,9 +913,9 @@ class LoaderTest(TestCase):
             "definitions.yaml": {"levels": ["zone"]},
             "index.yaml": {"entries": [{"name": "x", "kind": "file"}]},
             "x.yaml": {
-                "entities": [{"deployment_id": 1, "name": "A"}],
+                "entities": [{"entity_id": _uid(1), "name": "A"}],
                 "incoming_exits": [
-                    {"deployment_file": "y.yaml", "deployment_id": 1},
+                    _uid(1),
                 ],
             },
         }
@@ -936,7 +989,7 @@ class LoaderTest(TestCase):
 
     def test_top_level_mapping_empty_contents(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Empty",
+            "entity_id": _uid(1), "name": "Empty",
             "typeclass": "ev.X", "location": None,
             "contents": [],
         })
@@ -946,8 +999,8 @@ class LoaderTest(TestCase):
 
     def test_top_level_mapping_with_one_nested(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
-            "contents": [{"deployment_id": 2, "name": "Counter"}],
+            "entity_id": _uid(1), "name": "Bakery",
+            "contents": [{"entity_id": _uid(2), "name": "Counter"}],
         })
         self.assertEqual(len(entities), 2)
         self.assertEqual([e.is_nested for e in entities], [False, True])
@@ -955,11 +1008,11 @@ class LoaderTest(TestCase):
 
     def test_top_level_mapping_with_multiple_nested(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "contents": [
-                {"deployment_id": 2, "name": "A"},
-                {"deployment_id": 3, "name": "B"},
-                {"deployment_id": 4, "name": "C"},
+                {"entity_id": _uid(2), "name": "A"},
+                {"entity_id": _uid(3), "name": "B"},
+                {"entity_id": _uid(4), "name": "C"},
             ],
         })
         self.assertEqual(len(entities), 4)
@@ -974,10 +1027,10 @@ class LoaderTest(TestCase):
         # and the key inside the chest is_nested=True too (nesting depth
         # doesn't change the flag — only "is this inside another entity").
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Room",
+            "entity_id": _uid(1), "name": "Room",
             "contents": [{
-                "deployment_id": 2, "name": "Chest",
-                "contents": [{"deployment_id": 3, "name": "Key"}],
+                "entity_id": _uid(2), "name": "Chest",
+                "contents": [{"entity_id": _uid(3), "name": "Key"}],
             }],
         })
         self.assertEqual(len(entities), 3)
@@ -993,10 +1046,10 @@ class LoaderTest(TestCase):
         # First, FirstChild, Second.
         entities = self._load_yaml([
             {
-                "deployment_id": 1, "name": "First",
-                "contents": [{"deployment_id": 2, "name": "FirstChild"}],
+                "entity_id": _uid(1), "name": "First",
+                "contents": [{"entity_id": _uid(2), "name": "FirstChild"}],
             },
-            {"deployment_id": 3, "name": "Second"},
+            {"entity_id": _uid(3), "name": "Second"},
         ])
         self.assertEqual(len(entities), 3)
         self.assertEqual([e.is_nested for e in entities], [False, True, False])
@@ -1007,8 +1060,8 @@ class LoaderTest(TestCase):
 
     def test_nested_inherits_parent_path_and_location(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
-            "contents": [{"deployment_id": 2, "name": "Child"}],
+            "entity_id": _uid(1), "name": "Parent",
+            "contents": [{"entity_id": _uid(2), "name": "Child"}],
         })
         self.assertEqual(entities[0].path, entities[1].path)
         self.assertEqual(entities[0].location, entities[1].location)
@@ -1016,9 +1069,9 @@ class LoaderTest(TestCase):
 
     def test_contents_key_removed_from_parent_content(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
+            "entity_id": _uid(1), "name": "Parent",
             "description": "preserved",
-            "contents": [{"deployment_id": 2, "name": "Child"}],
+            "contents": [{"entity_id": _uid(2), "name": "Child"}],
         })
         # Parent body has the original keys minus `contents`.
         self.assertNotIn("contents", entities[0].content)
@@ -1030,7 +1083,7 @@ class LoaderTest(TestCase):
         # validator's _check_contents_field_shape (step 2) refuses this
         # cleanly; for step 1 the Loader just doesn't crash.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
+            "entity_id": _uid(1), "name": "Parent",
             "contents": "oops",
         })
         self.assertEqual(len(entities), 1)
@@ -1039,8 +1092,8 @@ class LoaderTest(TestCase):
     def test_malformed_contents_non_mapping_child(self):
         # A non-dict child inside `contents:` is skipped without raising.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
-            "contents": ["oops", {"deployment_id": 2, "name": "Real"}],
+            "entity_id": _uid(1), "name": "Parent",
+            "contents": ["oops", {"entity_id": _uid(2), "name": "Real"}],
         })
         # The string child is skipped; the dict child is emitted.
         self.assertEqual(len(entities), 2)
@@ -1051,25 +1104,22 @@ class LoaderTest(TestCase):
     #
     # The Loader detects whether the author wrote a `location:` field on
     # each entity (records had_author_location), and on nested entities
-    # synthesises content["location"] as a cross-ref dict pointing at the
+    # synthesises content["location"] as a reference pointing at the
     # parent. The synthesis overwrites any author-written location — the
     # had_author_location flag preserves the violation for the validator
     # to refuse later.
 
     def test_nested_entity_location_synthesised(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
-            "contents": [{"deployment_id": 2, "name": "Child"}],
+            "entity_id": _uid(1), "name": "Parent",
+            "contents": [{"entity_id": _uid(2), "name": "Child"}],
         })
-        self.assertEqual(entities[1].content["location"], {
-            "deployment_file": "x.yaml",
-            "deployment_id": 1,
-        })
+        self.assertEqual(entities[1].content["location"], _uid(1))
 
     def test_nested_entity_had_author_location_false_when_absent(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
-            "contents": [{"deployment_id": 2, "name": "Child"}],
+            "entity_id": _uid(1), "name": "Parent",
+            "contents": [{"entity_id": _uid(2), "name": "Child"}],
         })
         self.assertFalse(entities[1].had_author_location)
 
@@ -1077,9 +1127,9 @@ class LoaderTest(TestCase):
         # Even `location: null` from the author counts — the flag tracks
         # whether the YAML *had* the key, not what value it carried.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
+            "entity_id": _uid(1), "name": "Parent",
             "contents": [{
-                "deployment_id": 2, "name": "Child",
+                "entity_id": _uid(2), "name": "Child",
                 "location": None,
             }],
         })
@@ -1090,21 +1140,18 @@ class LoaderTest(TestCase):
         # will refuse later via had_author_location), so the emitted
         # content["location"] is the synthesised dict, not the author's.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
+            "entity_id": _uid(1), "name": "Parent",
             "contents": [{
-                "deployment_id": 2, "name": "Child",
+                "entity_id": _uid(2), "name": "Child",
                 "location": "I wrote something here",
             }],
         })
-        self.assertEqual(entities[1].content["location"], {
-            "deployment_file": "x.yaml",
-            "deployment_id": 1,
-        })
+        self.assertEqual(entities[1].content["location"], _uid(1))
         self.assertTrue(entities[1].had_author_location)
 
     def test_top_level_entity_had_author_location_true_when_present(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Solo",
+            "entity_id": _uid(1), "name": "Solo",
             "location": None,
         })
         self.assertFalse(entities[0].is_nested)
@@ -1113,7 +1160,7 @@ class LoaderTest(TestCase):
     def test_top_level_entity_had_author_location_false_when_absent(self):
         # No `location:` key on the top-level mapping at all.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Solo",
+            "entity_id": _uid(1), "name": "Solo",
         })
         self.assertFalse(entities[0].is_nested)
         self.assertFalse(entities[0].had_author_location)
@@ -1122,7 +1169,7 @@ class LoaderTest(TestCase):
         # Top-level entity's location is the author's responsibility;
         # the Loader does not touch it. content["location"] stays None.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Solo",
+            "entity_id": _uid(1), "name": "Solo",
             "location": None,
         })
         self.assertIsNone(entities[0].content["location"])
@@ -1131,32 +1178,24 @@ class LoaderTest(TestCase):
         # room (1) → chest (2) → key (3). Chest's location points at
         # room; key's location points at chest, not at room.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Room",
+            "entity_id": _uid(1), "name": "Room",
             "contents": [{
-                "deployment_id": 2, "name": "Chest",
-                "contents": [{"deployment_id": 3, "name": "Key"}],
+                "entity_id": _uid(2), "name": "Chest",
+                "contents": [{"entity_id": _uid(3), "name": "Key"}],
             }],
         })
-        self.assertEqual(entities[1].content["location"], {
-            "deployment_file": "x.yaml",
-            "deployment_id": 1,
-        })
-        self.assertEqual(entities[2].content["location"], {
-            "deployment_file": "x.yaml",
-            "deployment_id": 2,
-        })
+        self.assertEqual(entities[1].content["location"], _uid(1))
+        self.assertEqual(entities[2].content["location"], _uid(2))
 
-    def test_synthesised_location_uses_parent_deployment_file(self):
-        # Sanity: deployment_file in the synthesised dict is the file the
-        # parent was loaded from (same as nested entity's path).
+    def test_synthesised_location_is_the_parent_entity_id(self):
+        # The synthesised value names the parent and nothing else — no
+        # file, so nesting survives the file being renamed or the pair
+        # being moved wholesale into another file.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Parent",
-            "contents": [{"deployment_id": 2, "name": "Child"}],
+            "entity_id": _uid(1), "name": "Parent",
+            "contents": [{"entity_id": _uid(2), "name": "Child"}],
         })
-        self.assertEqual(
-            entities[1].content["location"]["deployment_file"],
-            entities[0].path,
-        )
+        self.assertEqual(entities[1].content["location"], _uid(1))
 
     # --- exits: block flattening (spike 4 step 1) ---
     #
@@ -1169,13 +1208,10 @@ class LoaderTest(TestCase):
 
     def test_exits_block_flattens_like_contents(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "exits": [{
-                "deployment_id": 2, "name": "north",
-                "destination": {
-                    "deployment_file": "millholm/inn.yaml",
-                    "deployment_id": 1,
-                },
+                "entity_id": _uid(2), "name": "north",
+                "destination": _uid(1),
             }],
         })
         self.assertEqual(len(entities), 2)
@@ -1184,19 +1220,16 @@ class LoaderTest(TestCase):
 
     def test_exits_block_synthesises_location(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
-            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+            "entity_id": _uid(1), "name": "Bakery",
+            "exits": [{"entity_id": _uid(2), "name": "north", "destination": {}}],
         })
-        self.assertEqual(entities[1].content["location"], {
-            "deployment_file": "x.yaml",
-            "deployment_id": 1,
-        })
+        self.assertEqual(entities[1].content["location"], _uid(1))
 
     def test_exits_key_removed_from_parent_content(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "description": "preserved",
-            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+            "exits": [{"entity_id": _uid(2), "name": "north", "destination": {}}],
         })
         self.assertNotIn("exits", entities[0].content)
         self.assertEqual(entities[0].content["description"], "preserved")
@@ -1205,29 +1238,23 @@ class LoaderTest(TestCase):
         # The Loader doesn't touch destination — it's authored on the exit
         # entity and passes through as-is for the validator and Builder.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "exits": [{
-                "deployment_id": 2, "name": "north",
-                "destination": {
-                    "deployment_file": "millholm/inn.yaml",
-                    "deployment_id": 1,
-                },
+                "entity_id": _uid(2), "name": "north",
+                "destination": _uid(1),
             }],
         })
-        self.assertEqual(entities[1].content["destination"], {
-            "deployment_file": "millholm/inn.yaml",
-            "deployment_id": 1,
-        })
+        self.assertEqual(entities[1].content["destination"], _uid(1))
 
     def test_both_contents_and_exits_blocks_flatten(self):
         # Author writes both blocks; the Loader walks contents first then
         # exits (consistent ordering, regardless of YAML key order).
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
-            "contents": [{"deployment_id": 2, "name": "chest"}],
+            "entity_id": _uid(1), "name": "Bakery",
+            "contents": [{"entity_id": _uid(2), "name": "chest"}],
             "exits": [{
-                "deployment_id": 3, "name": "north",
-                "destination": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "entity_id": _uid(3), "name": "north",
+                "destination": _uid(1),
             }],
         })
         self.assertEqual(len(entities), 3)
@@ -1237,12 +1264,12 @@ class LoaderTest(TestCase):
             ["Bakery", "chest", "north"],
         )
         # Both children get synthesised location pointing at the parent.
-        self.assertEqual(entities[1].content["location"]["deployment_id"], 1)
-        self.assertEqual(entities[2].content["location"]["deployment_id"], 1)
+        self.assertEqual(entities[1].content["location"], _uid(1))
+        self.assertEqual(entities[2].content["location"], _uid(1))
 
     def test_exits_block_empty_list_no_op(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "exits": [],
         })
         self.assertEqual(len(entities), 1)
@@ -1252,7 +1279,7 @@ class LoaderTest(TestCase):
         # Same defensive behaviour as malformed contents — skip recursion,
         # don't crash. Validator catches typeclass/shape mistakes downstream.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "exits": "oops",
         })
         self.assertEqual(len(entities), 1)
@@ -1260,8 +1287,8 @@ class LoaderTest(TestCase):
 
     def test_malformed_exits_non_mapping_child(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
-            "exits": ["oops", {"deployment_id": 2, "name": "north", "destination": {}}],
+            "entity_id": _uid(1), "name": "Bakery",
+            "exits": ["oops", {"entity_id": _uid(2), "name": "north", "destination": {}}],
         })
         self.assertEqual(len(entities), 2)
         self.assertEqual([e.is_nested for e in entities], [False, True])
@@ -1272,16 +1299,16 @@ class LoaderTest(TestCase):
         # children: validator can later refuse author-written location on
         # any nested entity uniformly.
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
-            "exits": [{"deployment_id": 2, "name": "north", "destination": {}}],
+            "entity_id": _uid(1), "name": "Bakery",
+            "exits": [{"entity_id": _uid(2), "name": "north", "destination": {}}],
         })
         self.assertFalse(entities[1].had_author_location)
 
     def test_nested_exit_had_author_location_true_when_present(self):
         entities = self._load_yaml({
-            "deployment_id": 1, "name": "Bakery",
+            "entity_id": _uid(1), "name": "Bakery",
             "exits": [{
-                "deployment_id": 2, "name": "north",
+                "entity_id": _uid(2), "name": "north",
                 "destination": {},
                 "location": None,
             }],
@@ -1308,24 +1335,24 @@ class ValidatorTest(TestCase):
                     content = {**content, key: default_value}
         return LoadedEntity(location={}, content=content, path=path)
 
-    def _valid(self, path: str, deployment_id: int) -> LoadedEntity:
+    def _valid(self, path: str, entity_id: str) -> LoadedEntity:
         return self._entity(path, {
-            "deployment_id": deployment_id,
+            "entity_id": entity_id,
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "x",
             "location": None,
         })
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone", "room")))
+        return Validator(Definitions(levels=("zone", "room")), file_metadata=_file_meta())
 
     # --- baseline -----------------------------------------------------
 
     def test_messages_starts_empty(self):
         self.assertEqual(self._validator().messages, [])
 
-    def test_seen_ids_starts_empty(self):
-        self.assertEqual(self._validator().seen_ids, {})
+    def test_entity_paths_starts_empty(self):
+        self.assertEqual(self._validator().entity_paths, {})
 
     def test_validate_empty_list_emits_proof_of_life_only(self):
         v = self._validator()
@@ -1334,95 +1361,121 @@ class ValidatorTest(TestCase):
         self.assertTrue(v.messages[0].startswith("VALIDATOR: "))
         self.assertEqual(v.errors, [])
 
-    def test_clean_run_returns_entities_unchanged(self):
+    def test_clean_run_returns_the_entity_index(self):
         v = self._validator()
         entities = [
-            self._valid("a.yaml", 1),
-            self._valid("b.yaml", 1),
+            self._valid("a.yaml", _uid(1)),
+            self._valid("b.yaml", _uid(2)),
         ]
-        self.assertEqual(v.validate(entities), entities)
+        self.assertEqual(v.validate(entities), {
+            _uid(1): "a.yaml",
+            _uid(2): "b.yaml",
+        })
         self.assertEqual(v.errors, [])
 
-    # --- deployment_id well-formed predicate --------------------------
+    # --- entity_id well-formed predicate --------------------------
 
     def test_missing_deployment_id_raises_and_records(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity("inn.yaml", {"name": "x"})])
         self.assertEqual(len(v.errors), 1)
-        self.assertIn("missing required field 'deployment_id'", v.errors[0])
+        self.assertIn("missing required field 'entity_id'", v.errors[0])
         self.assertIn("inn.yaml", v.errors[0])
 
-    def test_non_integer_deployment_id_rejected(self):
+    def test_non_uuid_entity_id_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity("a.yaml", {"deployment_id": "five"})])
-        self.assertIn("must be an integer", v.errors[0])
+            v.validate([self._entity("a.yaml", {"entity_id": "five"})])
+        self.assertIn("must be a UUID string", v.errors[0])
 
-    def test_bool_deployment_id_rejected(self):
-        # bool is a subclass of int in Python — must not be accepted.
+    def test_integer_entity_id_rejected(self):
+        # The previous scheme used small integers. One left behind in a
+        # file is a mistake, not a legacy value to tolerate.
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity("a.yaml", {"deployment_id": True})])
-        self.assertIn("must be an integer", v.errors[0])
+            v.validate([self._entity("a.yaml", {"entity_id": 1})])
+        self.assertIn("must be a UUID string", v.errors[0])
 
-    def test_negative_deployment_id_rejected(self):
+    def test_truncated_uuid_rejected(self):
+        # The parse is a typo guard: a mangled id would otherwise become
+        # a distinct identity that resolves against nothing.
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity("a.yaml", {"deployment_id": -1})])
-        self.assertIn("must be non-negative", v.errors[0])
+            v.validate([self._entity(
+                "a.yaml", {"entity_id": _uid(1)[:-4]},
+            )])
+        self.assertIn("must be a UUID string", v.errors[0])
 
-    def test_zero_deployment_id_accepted(self):
-        # Non-negative includes zero by design.
+    def test_uppercase_uuid_accepted(self):
+        # UUID parsing is case-insensitive; an author who pasted an
+        # upper-case id is not making a mistake.
         v = self._validator()
-        v.validate([self._valid("a.yaml", 0)])
+        v.validate([self._valid("a.yaml", _uid(1).upper())])
         self.assertEqual(v.errors, [])
 
-    # --- duplicate-id-within-file stateful check ----------------------
+    # --- repo-wide duplicate-id stateful check ------------------------
 
-    def test_duplicate_deployment_id_within_file_flagged(self):
+    def test_duplicate_entity_id_within_file_flagged(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([
-                self._valid("forest.yaml", 1),
-                self._valid("forest.yaml", 1),
+                self._valid("forest.yaml", _uid(1)),
+                self._valid("forest.yaml", _uid(1)),
             ])
         self.assertEqual(len(v.errors), 1)
-        self.assertIn("duplicate deployment_id=1", v.errors[0])
+        self.assertIn(f"duplicate entity_id={_uid(1)}", v.errors[0])
         self.assertIn("forest.yaml", v.errors[0])
 
-    def test_same_id_in_different_files_is_not_a_duplicate(self):
+    def test_same_id_in_different_files_is_a_duplicate(self):
+        # Uniqueness is repo-wide: an id IS the entity, so two entities
+        # carrying one is a collision wherever they live. This is the
+        # copied-file case, and the finding names both paths.
         v = self._validator()
-        v.validate([
-            self._valid("forest.yaml", 1),
-            self._valid("bakery.yaml", 1),
-        ])
-        self.assertEqual(v.errors, [])
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._valid("forest.yaml", _uid(1)),
+                self._valid("bakery.yaml", _uid(1)),
+            ])
+        self.assertEqual(len(v.errors), 1)
+        self.assertIn("bakery.yaml", v.errors[0])
+        self.assertIn("forest.yaml", v.errors[0])
 
-    def test_seen_ids_index_populated_after_clean_run(self):
+    def test_entity_paths_index_populated_after_clean_run(self):
         v = self._validator()
-        v.validate([
-            self._valid("forest.yaml", 1),
-            self._valid("forest.yaml", 2),
-            self._valid("bakery.yaml", 1),
+        index = v.validate([
+            self._valid("forest.yaml", _uid(1)),
+            self._valid("forest.yaml", _uid(2)),
+            self._valid("bakery.yaml", _uid(3)),
         ])
-        self.assertEqual(v.seen_ids, {
-            "forest.yaml": {1, 2},
-            "bakery.yaml": {1},
-        })
+        expected = {
+            _uid(1): "forest.yaml",
+            _uid(2): "forest.yaml",
+            _uid(3): "bakery.yaml",
+        }
+        self.assertEqual(v.entity_paths, expected)
+        # validate() hands the index back for the Builder to carry.
+        self.assertEqual(index, expected)
+
+    def test_returned_index_is_a_copy(self):
+        # The Builder mutates its copy as it tops up from the Reader;
+        # that must not write back into the Validator's state.
+        v = self._validator()
+        index = v.validate([self._valid("a.yaml", _uid(1))])
+        index[_uid(2)] = "b.yaml"
+        self.assertNotIn(_uid(2), v.entity_paths)
 
     def test_malformed_entity_skips_stateful_checks(self):
         # An entity that fails the well-formed predicate must NOT be
-        # recorded in seen_ids — stateful checks would otherwise operate
-        # on bad data (e.g. trying to add a non-integer to the set).
+        # indexed — stateful checks would otherwise operate on bad data.
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([
-                self._entity("a.yaml", {"deployment_id": "nope"}),
-                self._valid("a.yaml", 1),
+                self._entity("a.yaml", {"entity_id": "nope"}),
+                self._valid("a.yaml", _uid(1)),
             ])
         # Only the second entity made it into the index.
-        self.assertEqual(v.seen_ids, {"a.yaml": {1}})
+        self.assertEqual(v.entity_paths, {_uid(1): "a.yaml"})
 
     # --- "complete refusal" semantics ---------------------------------
 
@@ -1433,11 +1486,112 @@ class ValidatorTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([
                 self._entity("a.yaml", {"name": "x"}),       # missing field
-                self._entity("b.yaml", {"deployment_id": -1}),  # negative
+                self._entity("b.yaml", {"entity_id": "nope"}),  # malformed
             ])
         self.assertEqual(len(v.errors), 2)
         self.assertTrue(any("a.yaml" in e and "missing" in e for e in v.errors))
-        self.assertTrue(any("b.yaml" in e and "non-negative" in e for e in v.errors))
+        self.assertTrue(any(
+            "b.yaml" in e and "must be a UUID string" in e for e in v.errors
+        ))
+
+
+class ValidatorFileIdTest(TestCase):
+    """Verify every entity file declares a unique, well-formed file_id.
+
+    Scope comes from the entities, not from file_metadata: a file only
+    appears in the metadata dict if it declared at least one file-level
+    key, so a file that omitted file_id entirely would be invisible
+    there.
+    """
+
+    def _entity(self, path: str, entity_id: str) -> LoadedEntity:
+        return LoadedEntity(location={}, path=path, content={
+            "entity_id": entity_id,
+            "typeclass": "evennia.objects.objects.DefaultRoom",
+            "name": "x",
+            "location": None,
+        })
+
+    def _validator(self, file_metadata):
+        return Validator(
+            Definitions(levels=("zone",)), file_metadata=file_metadata,
+        )
+
+    def test_well_formed_file_id_accepted(self):
+        v = self._validator({"a.yaml": {"file_id": _uid(100)}})
+        index = v.validate([self._entity("a.yaml", _uid(1))])
+        self.assertEqual(v.errors, [])
+        self.assertEqual(index, {_uid(1): "a.yaml"})
+        self.assertEqual(v.file_ids, {_uid(100): "a.yaml"})
+
+    def test_missing_file_id_rejected(self):
+        # The file declared entities but no file-level keys at all, so
+        # it isn't in file_metadata — the check still has to see it.
+        v = self._validator({})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity("a.yaml", _uid(1))])
+        self.assertTrue(any(
+            "a.yaml" in e and "missing required field 'file_id'" in e
+            for e in v.errors
+        ))
+
+    def test_file_with_other_keys_but_no_file_id_rejected(self):
+        v = self._validator({"a.yaml": {"incoming_exits": []}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity("a.yaml", _uid(1))])
+        self.assertTrue(any(
+            "missing required field 'file_id'" in e for e in v.errors
+        ))
+
+    def test_malformed_file_id_rejected(self):
+        v = self._validator({"a.yaml": {"file_id": "not-a-uuid"}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity("a.yaml", _uid(1))])
+        self.assertTrue(any(
+            "'file_id' must be a UUID string" in e for e in v.errors
+        ))
+
+    def test_duplicate_file_id_rejected(self):
+        # The copied-file case: cleanup sweeps on file_id, so a
+        # duplicate means rebuilding the copy deletes the original's
+        # objects. Both paths are named — neither is more at fault.
+        v = self._validator({
+            "a.yaml": {"file_id": _uid(100)},
+            "b.yaml": {"file_id": _uid(100)},
+        })
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._entity("a.yaml", _uid(1)),
+                self._entity("b.yaml", _uid(2)),
+            ])
+        self.assertTrue(any(
+            "duplicate file_id" in e and "a.yaml" in e and "b.yaml" in e
+            for e in v.errors
+        ))
+
+    def test_reported_once_per_file_not_per_entity(self):
+        # Three entities in one file with no file_id is one finding,
+        # not three.
+        v = self._validator({})
+        with self.assertRaises(ValidatorError):
+            v.validate([
+                self._entity("a.yaml", _uid(1)),
+                self._entity("a.yaml", _uid(2)),
+                self._entity("a.yaml", _uid(3)),
+            ])
+        self.assertEqual(
+            len([e for e in v.errors if "file_id" in e]), 1,
+        )
+
+    def test_files_with_no_entities_are_not_required_to_declare_one(self):
+        # An index file carries no entities, so there is nothing for a
+        # file_id to identify.
+        v = self._validator({
+            "a.yaml": {"file_id": _uid(100)},
+            "index.yaml": {"entries": []},
+        })
+        v.validate([self._entity("a.yaml", _uid(1))])
+        self.assertEqual(v.errors, [])
 
 
 class ValidatorTypeclassResolvableTest(TestCase):
@@ -1453,7 +1607,7 @@ class ValidatorTypeclassResolvableTest(TestCase):
         return LoadedEntity(location={}, content=content, path=path)
 
     def _entity_with_typeclass(self, typeclass) -> LoadedEntity:
-        return self._entity("a.yaml", {"deployment_id": 1, "typeclass": typeclass})
+        return self._entity("a.yaml", {"entity_id": _uid(1), "typeclass": typeclass})
 
     def _defs(self):
         return Definitions(levels=("zone",))
@@ -1461,16 +1615,16 @@ class ValidatorTypeclassResolvableTest(TestCase):
     # --- gating: predicate runs only when evennia_runtime=True --------
 
     def test_evennia_runtime_defaults_false(self):
-        self.assertFalse(Validator(self._defs()).evennia_runtime)
+        self.assertFalse(Validator(self._defs(), file_metadata=_file_meta()).evennia_runtime)
 
     def test_default_off_skips_typeclass_check(self):
         # Bogus typeclass — would fail Tier 3, but Tier 3 doesn't run.
-        v = Validator(self._defs())
+        v = Validator(self._defs(), file_metadata=_file_meta())
         v.validate([self._entity_with_typeclass("nonexistent.module.NopeClass")])
         self.assertEqual(v.errors, [])
 
     def test_evennia_runtime_true_runs_typeclass_check(self):
-        v = Validator(self._defs(), evennia_runtime=True)
+        v = Validator(self._defs(), evennia_runtime=True, file_metadata=_file_meta())
         with self.assertRaises(ValidatorError):
             v.validate([self._entity_with_typeclass("nonexistent.module.NopeClass")])
         self.assertTrue(any("could not be imported" in e for e in v.errors))
@@ -1478,14 +1632,14 @@ class ValidatorTypeclassResolvableTest(TestCase):
     # --- per-case behaviour (only relevant under evennia_runtime=True)
 
     def test_typeclass_no_dot_flagged(self):
-        v = Validator(self._defs(), evennia_runtime=True)
+        v = Validator(self._defs(), evennia_runtime=True, file_metadata=_file_meta())
         with self.assertRaises(ValidatorError):
             v.validate([self._entity_with_typeclass("NopeClass")])
         self.assertTrue(any("not a dotted path" in e for e in v.errors))
 
     def test_typeclass_module_loaded_class_missing(self):
         # `os` is reliably importable; `NotARealClass` definitely isn't on it.
-        v = Validator(self._defs(), evennia_runtime=True)
+        v = Validator(self._defs(), evennia_runtime=True, file_metadata=_file_meta())
         with self.assertRaises(ValidatorError):
             v.validate([self._entity_with_typeclass("os.NotARealClass")])
         msg = " ".join(v.errors)
@@ -1494,7 +1648,7 @@ class ValidatorTypeclassResolvableTest(TestCase):
 
     def test_typeclass_resolvable_passes(self):
         # `os.PathLike` is a real, importable, public name.
-        v = Validator(self._defs(), evennia_runtime=True)
+        v = Validator(self._defs(), evennia_runtime=True, file_metadata=_file_meta())
         v.validate([self._entity_with_typeclass("os.PathLike")])
         self.assertEqual(v.errors, [])
 
@@ -1520,12 +1674,9 @@ class ValidatorDestinationTypeclassTest(TestCase):
         # on tests that aren't about it.
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "name": "x",
-                "location": {
-                    "deployment_file": "a.yaml",
-                    "deployment_id": 99,
-                },
+                "location": _uid(99),
             }
             for key, default in defaults.items():
                 if key not in content:
@@ -1533,7 +1684,7 @@ class ValidatorDestinationTypeclassTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self, *, evennia_runtime=True):
-        return Validator(Definitions(levels=("zone",)), evennia_runtime=evennia_runtime)
+        return Validator(Definitions(levels=("zone",)), evennia_runtime=evennia_runtime, file_metadata=_file_meta())
 
     # --- four-cell behaviour matrix -----------------------------------
 
@@ -1541,10 +1692,7 @@ class ValidatorDestinationTypeclassTest(TestCase):
         v = self._validator()
         v.validate([self._entity({
             "typeclass": self._DEFAULT_EXIT,
-            "destination": {
-                "deployment_file": "millholm/inn.yaml",
-                "deployment_id": 1,
-            },
+            "destination": _uid(1),
         })])
         self.assertEqual(v.errors, [])
 
@@ -1562,10 +1710,7 @@ class ValidatorDestinationTypeclassTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({
                 "typeclass": self._DEFAULT_OBJECT,
-                "destination": {
-                    "deployment_file": "millholm/inn.yaml",
-                    "deployment_id": 1,
-                },
+                "destination": _uid(1),
             })])
         self.assertTrue(any(
             "does not inherit from DefaultExit" in e for e in v.errors
@@ -1630,36 +1775,36 @@ class ValidatorTypeclassWellFormedTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_missing_typeclass_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"deployment_id": 1})])
+            v.validate([self._entity({"entity_id": _uid(1)})])
         self.assertTrue(any("missing required field 'typeclass'" in e for e in v.errors))
 
     def test_non_string_typeclass_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"deployment_id": 1, "typeclass": 42})])
+            v.validate([self._entity({"entity_id": _uid(1), "typeclass": 42})])
         self.assertTrue(any("'typeclass' must be a string" in e for e in v.errors))
 
     def test_empty_string_typeclass_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"deployment_id": 1, "typeclass": ""})])
+            v.validate([self._entity({"entity_id": _uid(1), "typeclass": ""})])
         self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
 
     def test_whitespace_only_typeclass_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"deployment_id": 1, "typeclass": "   "})])
+            v.validate([self._entity({"entity_id": _uid(1), "typeclass": "   "})])
         self.assertTrue(any("must be a non-empty string" in e for e in v.errors))
 
     def test_well_formed_typeclass_passes(self):
         v = self._validator()
         v.validate([self._entity({
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
         })])
         self.assertEqual(v.errors, [])
@@ -1672,7 +1817,7 @@ class ValidatorNameWellFormedTest(TestCase):
         # Auto-inject the other mandatory Tier 1 fields except name.
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "location": None,
             }
@@ -1682,7 +1827,7 @@ class ValidatorNameWellFormedTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_missing_name_rejected(self):
         v = self._validator()
@@ -1715,9 +1860,9 @@ class ValidatorNameWellFormedTest(TestCase):
 
 
 class ValidatorLocationWellFormedTest(TestCase):
-    """Tier 1 — location is mandatory; null OR cross-ref dict accepted.
+    """Tier 1 — location is mandatory; null OR reference accepted.
 
-    The cross-ref dict shape lands here in spike 2 step 3 alongside the
+    The reference shape lands here in spike 2 step 3 alongside the
     Loader's synthesis on nested entities (so nested entities — whose
     location is now a Loader-synthesised cross-ref — can pass the same
     predicate as top-level entities). Top-level entities can also use
@@ -1729,7 +1874,7 @@ class ValidatorLocationWellFormedTest(TestCase):
         # Auto-inject the other mandatory Tier 1 fields except location.
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
             }
@@ -1739,7 +1884,7 @@ class ValidatorLocationWellFormedTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml", **kwargs)
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_missing_location_rejected(self):
         v = self._validator()
@@ -1759,108 +1904,7 @@ class ValidatorLocationWellFormedTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"location": "somewhere"})])
         self.assertTrue(any(
-            "must be null or a cross-ref dict" in e for e in v.errors
-        ))
-
-    def test_well_formed_cross_ref_dict_accepted(self):
-        v = self._validator()
-        v.validate([self._entity({"location": {
-            "deployment_file": "millholm/bakery.yaml",
-            "deployment_id": 1,
-        }})])
-        self.assertEqual(v.errors, [])
-
-    def test_cross_ref_zero_deployment_id_accepted(self):
-        # Non-negative includes zero, mirroring _check_deployment_id_well_formed.
-        v = self._validator()
-        v.validate([self._entity({"location": {
-            "deployment_file": "a.yaml",
-            "deployment_id": 0,
-        }})])
-        self.assertEqual(v.errors, [])
-
-    def test_cross_ref_missing_deployment_file_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {"deployment_id": 5}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_file" in e
-            for e in v.errors
-        ))
-
-    def test_cross_ref_missing_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {"deployment_file": "a.yaml"}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_id" in e
-            for e in v.errors
-        ))
-
-    def test_cross_ref_extra_keys_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": "a.yaml",
-                "deployment_id": 1,
-                "comment": "annotation",
-            }})])
-        self.assertTrue(any("unexpected key" in e for e in v.errors))
-
-    def test_cross_ref_non_string_deployment_file_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": 7,
-                "deployment_id": 1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_file' must be a non-empty string" in e for e in v.errors
-        ))
-
-    def test_cross_ref_empty_deployment_file_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": "   ",
-                "deployment_id": 1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_file' must be a non-empty string" in e for e in v.errors
-        ))
-
-    def test_cross_ref_non_int_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": "a.yaml",
-                "deployment_id": "five",
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be an integer" in e for e in v.errors
-        ))
-
-    def test_cross_ref_bool_deployment_id_rejected(self):
-        # bool is an int subclass — must not be accepted.
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": "a.yaml",
-                "deployment_id": True,
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be an integer" in e for e in v.errors
-        ))
-
-    def test_cross_ref_negative_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"location": {
-                "deployment_file": "a.yaml",
-                "deployment_id": -1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be non-negative" in e for e in v.errors
+            "must be a reference" in e for e in v.errors
         ))
 
     def test_location_predicate_is_per_entity(self):
@@ -1874,9 +1918,45 @@ class ValidatorLocationWellFormedTest(TestCase):
         )
         self.assertFalse(hasattr(Validator, "TOP_LEVEL_PREDICATES"))
 
+    def test_reference_accepted(self):
+        v = self._validator()
+        v.validate([self._entity({"location": _uid(1)})])
+        self.assertEqual(v.errors, [])
+
+    def test_uppercase_reference_accepted(self):
+        # UUID parsing is case-insensitive; a pasted upper-case id is
+        # not an authoring mistake.
+        v = self._validator()
+        v.validate([self._entity({"location": _uid(1).upper()})])
+        self.assertEqual(v.errors, [])
+
+    def test_cross_ref_dict_rejected(self):
+        # The previous scheme's {deployment_file, deployment_id} pair.
+        # A reference names no file — that is what lets an entity move
+        # between files without editing anything pointing at it.
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": {
+                "deployment_file": "a.yaml", "deployment_id": 1,
+            }})])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
+
+    def test_integer_reference_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": 1})])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
+
+    def test_truncated_reference_rejected(self):
+        v = self._validator()
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity({"location": _uid(1)[:-4]})])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
+
+
 
 class ValidatorDestinationWellFormedTest(TestCase):
-    """Tier 1 — `destination:` (when present) is a strict cross-ref dict.
+    """Tier 1 — `destination:` (when present) is a strict reference.
 
     Mirrors the cross-ref shape check on `location:` — same shared helper
     (`_check_cross_ref_dict_shape`) drives both. The difference between
@@ -1891,13 +1971,10 @@ class ValidatorDestinationWellFormedTest(TestCase):
         # doesn't fire on tests that aren't about it.
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultExit",
                 "name": "north",
-                "location": {
-                    "deployment_file": "a.yaml",
-                    "deployment_id": 99,
-                },
+                "location": _uid(99),
             }
             for key, default in defaults.items():
                 if key not in content:
@@ -1905,7 +1982,7 @@ class ValidatorDestinationWellFormedTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_destination_absent_passes(self):
         # destination: is optional at this layer — Tier 3 (step 3) decides
@@ -1916,18 +1993,12 @@ class ValidatorDestinationWellFormedTest(TestCase):
 
     def test_well_formed_destination_dict_accepted(self):
         v = self._validator()
-        v.validate([self._entity({"destination": {
-            "deployment_file": "millholm/inn.yaml",
-            "deployment_id": 1,
-        }})])
+        v.validate([self._entity({"destination": _uid(1)})])
         self.assertEqual(v.errors, [])
 
     def test_destination_zero_deployment_id_accepted(self):
         v = self._validator()
-        v.validate([self._entity({"destination": {
-            "deployment_file": "a.yaml",
-            "deployment_id": 0,
-        }})])
+        v.validate([self._entity({"destination": _uid(0)})])
         self.assertEqual(v.errors, [])
 
     def test_destination_string_rejected(self):
@@ -1935,7 +2006,7 @@ class ValidatorDestinationWellFormedTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"destination": "somewhere"})])
         self.assertTrue(any(
-            "'destination' must be a cross-ref dict" in e for e in v.errors
+            "'destination' must be a reference" in e for e in v.errors
         ))
 
     def test_destination_null_rejected(self):
@@ -1944,96 +2015,31 @@ class ValidatorDestinationWellFormedTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"destination": None})])
         self.assertTrue(any(
-            "'destination' must be a cross-ref dict" in e for e in v.errors
+            "'destination' must be a reference" in e for e in v.errors
         ))
 
-    def test_destination_missing_deployment_file_rejected(self):
+    def test_destination_reference_accepted(self):
         v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {"deployment_id": 5}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_file" in e
-            for e in v.errors
-        ))
+        v.validate([self._entity({"destination": _uid(1)})])
+        self.assertEqual(v.errors, [])
 
-    def test_destination_missing_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {"deployment_file": "a.yaml"}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_id" in e
-            for e in v.errors
-        ))
-
-    def test_destination_extra_keys_rejected(self):
+    def test_destination_cross_ref_dict_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"destination": {
-                "deployment_file": "a.yaml",
-                "deployment_id": 1,
-                "comment": "annotation",
+                "deployment_file": "a.yaml", "deployment_id": 1,
             }})])
-        self.assertTrue(any("unexpected key" in e for e in v.errors))
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
 
-    def test_destination_non_string_deployment_file_rejected(self):
+    def test_destination_integer_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {
-                "deployment_file": 7,
-                "deployment_id": 1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_file' must be a non-empty string" in e for e in v.errors
-        ))
-
-    def test_destination_empty_deployment_file_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {
-                "deployment_file": "   ",
-                "deployment_id": 1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_file' must be a non-empty string" in e for e in v.errors
-        ))
-
-    def test_destination_non_int_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {
-                "deployment_file": "a.yaml",
-                "deployment_id": "five",
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be an integer" in e for e in v.errors
-        ))
-
-    def test_destination_bool_deployment_id_rejected(self):
-        # bool is an int subclass — reject it explicitly.
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {
-                "deployment_file": "a.yaml",
-                "deployment_id": True,
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be an integer" in e for e in v.errors
-        ))
-
-    def test_destination_negative_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"destination": {
-                "deployment_file": "a.yaml",
-                "deployment_id": -1,
-            }})])
-        self.assertTrue(any(
-            "'deployment_id' must be non-negative" in e for e in v.errors
-        ))
+            v.validate([self._entity({"destination": 1})])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
 
 
 class ValidatorHomeWellFormedTest(TestCase):
-    """Tier 1 — `home:` (when present) is null or a strict cross-ref dict.
+    """Tier 1 — `home:` (when present) is null or a strict reference.
 
     Optional field. Absence means "use Evennia's settings.DEFAULT_HOME"
     (typically Limbo). When present, two valid shapes:
@@ -2047,7 +2053,7 @@ class ValidatorHomeWellFormedTest(TestCase):
     def _entity(self, content) -> LoadedEntity:
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultObject",
                 "name": "x",
                 "location": None,
@@ -2058,7 +2064,7 @@ class ValidatorHomeWellFormedTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_home_absent_passes(self):
         v = self._validator()
@@ -2072,10 +2078,7 @@ class ValidatorHomeWellFormedTest(TestCase):
 
     def test_well_formed_home_dict_accepted(self):
         v = self._validator()
-        v.validate([self._entity({"home": {
-            "deployment_file": "a.yaml",
-            "deployment_id": 5,
-        }})])
+        v.validate([self._entity({"home": _uid(5)})])
         self.assertEqual(v.errors, [])
 
     def test_home_string_rejected(self):
@@ -2083,7 +2086,7 @@ class ValidatorHomeWellFormedTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"home": "Limbo"})])
         self.assertTrue(any(
-            "'home' must be null or a cross-ref dict" in e for e in v.errors
+            "'home' must be a reference" in e for e in v.errors
         ))
 
     def test_home_int_rejected(self):
@@ -2091,38 +2094,21 @@ class ValidatorHomeWellFormedTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"home": 2})])
         self.assertTrue(any(
-            "'home' must be null or a cross-ref dict" in e for e in v.errors
+            "'home' must be a reference" in e for e in v.errors
         ))
 
-    def test_home_missing_deployment_file_rejected(self):
+    def test_home_reference_accepted(self):
         v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"home": {"deployment_id": 5}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_file" in e
-            for e in v.errors
-        ))
+        v.validate([self._entity({"home": _uid(1)})])
+        self.assertEqual(v.errors, [])
 
-    def test_home_missing_deployment_id_rejected(self):
-        v = self._validator()
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity({"home": {"deployment_file": "a.yaml"}})])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_id" in e
-            for e in v.errors
-        ))
-
-    def test_home_unexpected_key_rejected(self):
+    def test_home_cross_ref_dict_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({"home": {
-                "deployment_file": "a.yaml",
-                "deployment_id": 5,
-                "extra": "no",
+                "deployment_file": "a.yaml", "deployment_id": 1,
             }})])
-        self.assertTrue(any(
-            "unexpected key" in e for e in v.errors
-        ))
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
 
 
 class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
@@ -2137,7 +2123,7 @@ class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
     def _entity(self, content) -> LoadedEntity:
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultExit",
                 "name": "north",
             }
@@ -2147,16 +2133,13 @@ class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_destination_with_null_location_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({
-                "destination": {
-                    "deployment_file": "millholm/inn.yaml",
-                    "deployment_id": 1,
-                },
+                "destination": _uid(1),
                 "location": None,
             })])
         self.assertTrue(any(
@@ -2166,14 +2149,8 @@ class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
     def test_destination_with_cross_ref_location_passes(self):
         v = self._validator()
         v.validate([self._entity({
-            "destination": {
-                "deployment_file": "millholm/inn.yaml",
-                "deployment_id": 1,
-            },
-            "location": {
-                "deployment_file": "millholm/bakery.yaml",
-                "deployment_id": 1,
-            },
+            "destination": _uid(1),
+            "location": _uid(1),
         })])
         self.assertEqual(v.errors, [])
 
@@ -2190,10 +2167,7 @@ class ValidatorLocationNotNullWhenDestinationPresentTest(TestCase):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity({
-                "destination": {
-                    "deployment_file": "a.yaml",
-                    "deployment_id": 1,
-                },
+                "destination": _uid(1),
                 # no location key at all
             })])
         # Exactly one finding mentions "location" — the missing-field one.
@@ -2225,11 +2199,11 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
     def _entity(self) -> LoadedEntity:
         # A minimal valid entity from the file. The shape check doesn't
         # actually consult the entity, but validate() needs at least one
-        # entity from the relevant path to make seen_ids non-empty.
+        # entity from the relevant path to make entity_paths non-empty.
         return LoadedEntity(
             location={},
             content={
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -2239,7 +2213,8 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
 
     def _validator(self, file_metadata):
         return Validator(
-            Definitions(levels=("zone",)), file_metadata=file_metadata,
+            Definitions(levels=("zone",)),
+            file_metadata=_merge_file_meta(file_metadata),
         )
 
     def test_absent_field_passes(self):
@@ -2261,8 +2236,8 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
 
     def test_well_formed_list_accepted(self):
         v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_file": "millholm/inn.yaml", "deployment_id": 2},
-            {"deployment_file": "millholm/forest.yaml", "deployment_id": 7},
+            _uid(2),
+            _uid(7),
         ]}})
         v.validate([self._entity()])
         self.assertEqual(v.errors, [])
@@ -2280,55 +2255,15 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity()])
         self.assertTrue(any(
-            "must be a cross-ref dict" in e for e in v.errors
-        ))
-
-    def test_missing_deployment_file_rejected(self):
-        v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_id": 1},
-        ]}})
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity()])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_file" in e
-            for e in v.errors
-        ))
-
-    def test_missing_deployment_id_rejected(self):
-        v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_file": "a.yaml"},
-        ]}})
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity()])
-        self.assertTrue(any(
-            "missing required key" in e and "deployment_id" in e
-            for e in v.errors
-        ))
-
-    def test_extra_keys_rejected(self):
-        v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_file": "a.yaml", "deployment_id": 1, "comment": "no"},
-        ]}})
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity()])
-        self.assertTrue(any("unexpected key" in e for e in v.errors))
-
-    def test_negative_deployment_id_rejected(self):
-        v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_file": "a.yaml", "deployment_id": -1},
-        ]}})
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity()])
-        self.assertTrue(any(
-            "'deployment_id' must be non-negative" in e for e in v.errors
+            "must be a reference" in e for e in v.errors
         ))
 
     def test_index_in_finding_path(self):
         # When an entry is malformed, the finding identifies WHICH index
         # in the list is at fault — easier for authors to locate the typo.
         v = self._validator({"a.yaml": {"incoming_exits": [
-            {"deployment_file": "good.yaml", "deployment_id": 1},
-            {"deployment_file": "bad.yaml", "deployment_id": "not-an-int"},
+            _uid(1),
+            {"deployment_file": "bad.yaml", "entity_id": "not-an-int"},
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity()])
@@ -2346,7 +2281,7 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
         entity = LoadedEntity(
             location={},
             content={
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -2355,7 +2290,22 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
         )
         with self.assertRaises(ValidatorError):
             v.validate([entity])
-        self.assertTrue(any("x.yaml: incoming_exits" in e for e in v.errors))
+        self.assertTrue(any("x.yaml: 'incoming_exits" in e for e in v.errors))
+
+    def test_cross_ref_dict_entry_rejected(self):
+        v = self._validator({"a.yaml": {"incoming_exits": [
+            {"deployment_file": "a.yaml", "deployment_id": 1},
+        ]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
+
+    def test_integer_entry_rejected(self):
+        v = self._validator({"a.yaml": {"incoming_exits": [1]}})
+        with self.assertRaises(ValidatorError):
+            v.validate([self._entity()])
+        self.assertTrue(any("must be a reference" in e for e in v.errors))
+
 
 
 class ValidatorLinksFieldShapeTest(TestCase):
@@ -2374,7 +2324,7 @@ class ValidatorLinksFieldShapeTest(TestCase):
         return LoadedEntity(
             location={},
             content={
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -2384,14 +2334,15 @@ class ValidatorLinksFieldShapeTest(TestCase):
 
     def _validator(self, file_metadata):
         return Validator(
-            Definitions(levels=("zone",)), file_metadata=file_metadata,
+            Definitions(levels=("zone",)),
+            file_metadata=_merge_file_meta(file_metadata),
         )
 
     def _well_formed_link(self):
         return {
-            "entity": {"deployment_file": "a.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "a.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }
 
     def test_absent_field_passes(self):
@@ -2509,7 +2460,8 @@ class ValidatorLinksFieldShapeTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity()])
         self.assertTrue(any(
-            "'entity' must be a cross-ref dict" in e for e in v.errors
+            "links[0].entity" in e and "must be a reference" in e
+            for e in v.errors
         ))
 
     def test_points_to_non_dict_rejected(self):
@@ -2519,17 +2471,7 @@ class ValidatorLinksFieldShapeTest(TestCase):
         with self.assertRaises(ValidatorError):
             v.validate([self._entity()])
         self.assertTrue(any(
-            "'points_to' must be a cross-ref dict" in e for e in v.errors
-        ))
-
-    def test_entity_bad_cross_ref_shape_rejected(self):
-        link = self._well_formed_link()
-        link["entity"] = {"deployment_file": "a.yaml"}  # missing deployment_id
-        v = self._validator({"a.yaml": {"links": [link]}})
-        with self.assertRaises(ValidatorError):
-            v.validate([self._entity()])
-        self.assertTrue(any(
-            "links[0].entity" in e and "missing required key" in e
+            "links[0].points_to" in e and "must be a reference" in e
             for e in v.errors
         ))
 
@@ -2539,7 +2481,7 @@ class ValidatorLinksFieldShapeTest(TestCase):
             v.validate([LoadedEntity(
                 location={},
                 content={
-                    "deployment_id": 1,
+                    "entity_id": _uid(1),
                     "typeclass": "evennia.objects.objects.DefaultRoom",
                     "name": "x",
                     "location": None,
@@ -2825,12 +2767,9 @@ class ValidatorNoAuthorLocationOnNestedTest(TestCase):
         # location: dict for a nested entity would normally be present
         # (and the test exercises the predicate alone, not the Loader),
         # so we set it to a well-formed default unless overridden.
-        synthesised = {
-            "deployment_file": "a.yaml",
-            "deployment_id": 99,
-        }
+        synthesised = _uid(99)
         content = {
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "x",
             "location": location_value if location_value is not None else synthesised,
@@ -2842,7 +2781,7 @@ class ValidatorNoAuthorLocationOnNestedTest(TestCase):
         )
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_nested_with_author_location_refused(self):
         v = self._validator()
@@ -2879,7 +2818,7 @@ class ValidatorNoAuthorLocationOnNestedTest(TestCase):
         # We assert that the no-author-location finding isn't among the
         # findings.
         content = {
-            "deployment_id": 1,
+            "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "x",
         }
@@ -2900,7 +2839,7 @@ class ValidatorAttributesFieldShapeTest(TestCase):
     def _entity(self, content) -> LoadedEntity:
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -2911,7 +2850,7 @@ class ValidatorAttributesFieldShapeTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     # --- pass cases ---------------------------------------------------
 
@@ -3016,7 +2955,7 @@ class ValidatorLocksFieldShapeTest(TestCase):
     def _entity(self, content) -> LoadedEntity:
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -3027,7 +2966,7 @@ class ValidatorLocksFieldShapeTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_no_locks_field_passes(self):
         v = self._validator()
@@ -3066,7 +3005,7 @@ class ValidatorAliasesFieldShapeTest(TestCase):
     def _entity(self, content) -> LoadedEntity:
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -3077,7 +3016,7 @@ class ValidatorAliasesFieldShapeTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_no_aliases_field_passes(self):
         v = self._validator()
@@ -3131,7 +3070,7 @@ class ValidatorDescriptionFieldShapeTest(TestCase):
         # Auto-inject the other mandatory Tier 1 fields.
         if isinstance(content, dict):
             defaults = {
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -3142,7 +3081,7 @@ class ValidatorDescriptionFieldShapeTest(TestCase):
         return LoadedEntity(location={}, content=content, path="a.yaml")
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_no_description_field_passes(self):
         v = self._validator()
@@ -3188,7 +3127,7 @@ class ValidatorTagsShapeTest(TestCase):
     """Tier 1 — verify _check_tags_field_shape on the tags field."""
 
     _BASE = {
-        "deployment_id": 1,
+        "entity_id": _uid(1),
         "typeclass": "evennia.objects.objects.DefaultRoom",
         "name": "x",
         "location": None,
@@ -3207,7 +3146,7 @@ class ValidatorTagsShapeTest(TestCase):
         )
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_no_tags_field_passes(self):
         v = self._validator()
@@ -3290,7 +3229,7 @@ class ValidatorTagsReservedCategoryTest(TestCase):
         return LoadedEntity(
             location={},
             content={
-                "deployment_id": 1,
+                "entity_id": _uid(1),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "x",
                 "location": None,
@@ -3300,7 +3239,7 @@ class ValidatorTagsReservedCategoryTest(TestCase):
         )
 
     def _validator(self):
-        return Validator(Definitions(levels=("zone",)))
+        return Validator(Definitions(levels=("zone",)), file_metadata=_file_meta())
 
     def test_non_reserved_category_passes(self):
         v = self._validator()
@@ -3347,7 +3286,7 @@ class ValidatorTagsReservedCategoryTest(TestCase):
 
 
 class ValidatorCrossRefResolutionTest(TestCase):
-    """Tier 4 — `_check_cross_refs` post-loop phase against `seen_ids`.
+    """Tier 4 — `_check_cross_refs` post-loop phase against `entity_paths`.
 
     Runs only when the caller passes `resolve_cross_refs=True` to
     Validator.__init__. `wb_build` whole-repo pre-validation and
@@ -3357,11 +3296,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
     _NO_HOME = object()  # sentinel — distinguish "omit home" from "home: null"
 
     def _entity(
-        self, *, path, deployment_id,
+        self, *, path, entity_id,
         location=None, destination=None, home=_NO_HOME,
     ) -> LoadedEntity:
         content = {
-            "deployment_id": deployment_id,
+            "entity_id": entity_id,
             "name": "x",
             "typeclass": "evennia.objects.objects.DefaultObject",
             "location": location,
@@ -3376,7 +3315,7 @@ class ValidatorCrossRefResolutionTest(TestCase):
         return Validator(
             Definitions(levels=("zone",)),
             resolve_cross_refs=resolve_cross_refs,
-            file_metadata=file_metadata,
+            file_metadata=_merge_file_meta(file_metadata),
         )
 
     # --- gating ----------------------------------------------------------
@@ -3387,8 +3326,8 @@ class ValidatorCrossRefResolutionTest(TestCase):
         # ref is invisible without Tier 4.)
         v = self._validator(resolve_cross_refs=False)
         v.validate([self._entity(
-            path="bakery.yaml", deployment_id=1,
-            location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            path="bakery.yaml", entity_id=_uid(1),
+            location=_uid(99),
         )])
         self.assertFalse(any("does not resolve" in e for e in v.errors))
 
@@ -3396,44 +3335,44 @@ class ValidatorCrossRefResolutionTest(TestCase):
 
     def test_location_cross_ref_resolves_within_same_file(self):
         # Author writes a top-level entity placed inside another top-level
-        # entity in the same file. Both seen_ids entries land before
+        # entity in the same file. Both entity_paths entries land before
         # Tier 4 runs, so the lookup hits.
         v = self._validator()
         v.validate([
-            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(1), location=None),
             self._entity(
-                path="a.yaml", deployment_id=2,
-                location={"deployment_file": "a.yaml", "deployment_id": 1},
+                path="a.yaml", entity_id=_uid(2),
+                location=_uid(1),
             ),
         ])
         self.assertEqual(v.errors, [])
 
-    def test_destination_cross_ref_resolves_across_files(self):
+    def test_destination_reference_resolves_across_files(self):
         v = self._validator()
         v.validate([
-            self._entity(path="bakery.yaml", deployment_id=1, location=None),
-            self._entity(path="inn.yaml", deployment_id=1, location=None),
+            self._entity(path="bakery.yaml", entity_id=_uid(1), location=None),
+            self._entity(path="inn.yaml", entity_id=_uid(2), location=None),
             self._entity(
-                path="bakery.yaml", deployment_id=2,
-                location={"deployment_file": "bakery.yaml", "deployment_id": 1},
-                destination={"deployment_file": "inn.yaml", "deployment_id": 1},
+                path="bakery.yaml", entity_id=_uid(3),
+                location=_uid(1),
+                destination=_uid(2),
             ),
         ])
         self.assertEqual(v.errors, [])
 
     def test_forward_ref_within_same_file_resolves(self):
         # Entity A (id=1) declares location pointing at entity B (id=2)
-        # which appears later in the entity list. seen_ids is fully
+        # which appears later in the entity list. entity_paths is fully
         # built before Tier 4 runs, so the forward ref still resolves.
         # (Builder's same-file forward-ref refusal is a separate
         # decision at create time, not a Tier 4 concern.)
         v = self._validator()
         v.validate([
             self._entity(
-                path="a.yaml", deployment_id=1,
-                location={"deployment_file": "a.yaml", "deployment_id": 2},
+                path="a.yaml", entity_id=_uid(1),
+                location=_uid(2),
             ),
-            self._entity(path="a.yaml", deployment_id=2, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(2), location=None),
         ])
         self.assertEqual(v.errors, [])
 
@@ -3443,11 +3382,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="bakery.yaml", deployment_id=1,
-                location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+                path="bakery.yaml", entity_id=_uid(1),
+                location=_uid(99),
             )])
         self.assertTrue(any(
-            "'location' cross-ref to" in e and "does not resolve" in e
+            "'location' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
@@ -3455,12 +3394,12 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="bakery.yaml", deployment_id=1,
-                location={"deployment_file": "bakery.yaml", "deployment_id": 1},
-                destination={"deployment_file": "ghost.yaml", "deployment_id": 99},
+                path="bakery.yaml", entity_id=_uid(1),
+                location=_uid(1),
+                destination=_uid(99),
             )])
         self.assertTrue(any(
-            "'destination' cross-ref to" in e and "does not resolve" in e
+            "'destination' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
@@ -3468,28 +3407,28 @@ class ValidatorCrossRefResolutionTest(TestCase):
     #
     # `home:` is an optional per-entity field. Tier 4 walks it the same way
     # as location/destination: well-shaped dict refs must resolve in
-    # seen_ids; null is a meaningful value (translates to nohome=True at
+    # entity_paths; null is a meaningful value (translates to nohome=True at
     # build time) and must not produce a Tier 4 finding; absence likewise.
 
     def test_home_absent_passes(self):
         v = self._validator()
-        v.validate([self._entity(path="a.yaml", deployment_id=1, location=None)])
+        v.validate([self._entity(path="a.yaml", entity_id=_uid(1), location=None)])
         self.assertEqual(v.errors, [])
 
     def test_home_null_passes(self):
         v = self._validator()
         v.validate([self._entity(
-            path="a.yaml", deployment_id=1, location=None, home=None,
+            path="a.yaml", entity_id=_uid(1), location=None, home=None,
         )])
         self.assertEqual(v.errors, [])
 
     def test_home_cross_ref_resolves(self):
         v = self._validator()
         v.validate([
-            self._entity(path="a.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(1), location=None),
             self._entity(
-                path="a.yaml", deployment_id=2, location=None,
-                home={"deployment_file": "a.yaml", "deployment_id": 1},
+                path="a.yaml", entity_id=_uid(2), location=None,
+                home=_uid(1),
             ),
         ])
         self.assertEqual(v.errors, [])
@@ -3498,36 +3437,36 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="a.yaml", deployment_id=1, location=None,
-                home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+                path="a.yaml", entity_id=_uid(1), location=None,
+                home=_uid(99),
             )])
         self.assertTrue(any(
-            "'home' cross-ref to" in e and "does not resolve" in e
+            "'home' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
     def test_home_skipped_when_resolve_cross_refs_false(self):
         v = self._validator(resolve_cross_refs=False)
         v.validate([self._entity(
-            path="a.yaml", deployment_id=1, location=None,
-            home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            path="a.yaml", entity_id=_uid(1), location=None,
+            home=_uid(99),
         )])
         self.assertFalse(any("does not resolve" in e for e in v.errors))
 
-    def test_target_file_present_but_id_missing_reported(self):
-        # Target file is in seen_ids but the specific deployment_id
-        # isn't — still a miss.
+    def test_unknown_id_reported_even_with_other_entities_present(self):
+        # A populated index is not a resolving one — the specific
+        # entity_id has to be in it.
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([
-                self._entity(path="a.yaml", deployment_id=1, location=None),
+                self._entity(path="a.yaml", entity_id=_uid(1), location=None),
                 self._entity(
-                    path="b.yaml", deployment_id=1,
-                    location={"deployment_file": "a.yaml", "deployment_id": 99},
+                    path="b.yaml", entity_id=_uid(2),
+                    location=_uid(99),
                 ),
             ])
         self.assertTrue(any(
-            "deployment_id=99" in e and "does not resolve" in e
+            f"entity_id={_uid(99)}" in e and "does not resolve" in e
             for e in v.errors
         ))
 
@@ -3541,12 +3480,12 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="a.yaml", deployment_id=1,
+                path="a.yaml", entity_id=_uid(1),
                 location=None,
                 destination="not a dict",
             )])
         self.assertTrue(any(
-            "'destination' must be a cross-ref dict" in e for e in v.errors
+            "'destination' must be a reference" in e for e in v.errors
         ))
         self.assertFalse(any(
             "does not resolve" in e for e in v.errors
@@ -3556,32 +3495,32 @@ class ValidatorCrossRefResolutionTest(TestCase):
     #
     # incoming_exits is file-level metadata; refs come through
     # file_metadata, not entity content. Tier 4 walks file_metadata per
-    # file path and resolves each ref against seen_ids.
+    # file path and resolves each ref against entity_paths.
 
     def test_incoming_exits_all_resolve(self):
         # bakery.yaml's incoming_exits register two exits living in
-        # other files; both targets exist in seen_ids.
+        # other files; both targets exist in entity_paths.
         v = self._validator(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "inn.yaml", "deployment_id": 2},
-            {"deployment_file": "forest.yaml", "deployment_id": 7},
+            _uid(2),
+            _uid(7),
         ]}})
         v.validate([
-            self._entity(path="bakery.yaml", deployment_id=1, location=None),
-            self._entity(path="inn.yaml", deployment_id=2, location=None),
-            self._entity(path="forest.yaml", deployment_id=7, location=None),
+            self._entity(path="bakery.yaml", entity_id=_uid(1), location=None),
+            self._entity(path="inn.yaml", entity_id=_uid(2), location=None),
+            self._entity(path="forest.yaml", entity_id=_uid(7), location=None),
         ])
         self.assertEqual(v.errors, [])
 
     def test_incoming_exits_unresolved_reported(self):
         v = self._validator(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            _uid(99),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="bakery.yaml", deployment_id=1, location=None,
+                path="bakery.yaml", entity_id=_uid(1), location=None,
             )])
         self.assertTrue(any(
-            "'incoming_exits[0]' cross-ref to" in e and "does not resolve" in e
+            "'incoming_exits[0]' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
@@ -3589,13 +3528,13 @@ class ValidatorCrossRefResolutionTest(TestCase):
         # First entry resolves, second doesn't. Only the second produces
         # a finding — index naming makes the bad one easy to locate.
         v = self._validator(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "inn.yaml", "deployment_id": 2},
-            {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            _uid(2),
+            _uid(99),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([
-                self._entity(path="bakery.yaml", deployment_id=1, location=None),
-                self._entity(path="inn.yaml", deployment_id=2, location=None),
+                self._entity(path="bakery.yaml", entity_id=_uid(1), location=None),
+                self._entity(path="inn.yaml", entity_id=_uid(2), location=None),
             ])
         # Exactly one finding, naming index 1 (the bad one).
         unresolved = [e for e in v.errors if "does not resolve" in e]
@@ -3607,11 +3546,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator(
             resolve_cross_refs=False,
             file_metadata={"bakery.yaml": {"incoming_exits": [
-                {"deployment_file": "ghost.yaml", "deployment_id": 99},
+                _uid(99),
             ]}},
         )
         v.validate([self._entity(
-            path="bakery.yaml", deployment_id=1, location=None,
+            path="bakery.yaml", entity_id=_uid(1), location=None,
         )])
         self.assertFalse(any("does not resolve" in e for e in v.errors))
 
@@ -3624,11 +3563,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="bakery.yaml", deployment_id=1, location=None,
+                path="bakery.yaml", entity_id=_uid(1), location=None,
             )])
         # File-level Tier 1 finding present:
         self.assertTrue(any(
-            "incoming_exits[0]" in e and "must be a cross-ref dict" in e
+            "incoming_exits[0]" in e and "must be a reference" in e
             for e in v.errors
         ))
         # Tier 4 stays quiet on the malformed entry:
@@ -3640,11 +3579,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
         # Tier 4 findings for incoming_exits use the file path (the
         # registry's home), not any specific entity from the file.
         v = self._validator(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            _uid(99),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="bakery.yaml", deployment_id=1, location=None,
+                path="bakery.yaml", entity_id=_uid(1), location=None,
             )])
         unresolved = [e for e in v.errors if "does not resolve" in e]
         self.assertEqual(len(unresolved), 1)
@@ -3653,75 +3592,75 @@ class ValidatorCrossRefResolutionTest(TestCase):
     # --- file-level: links: -----------------------------------------------
     #
     # Tier 4 walks each well-shaped link entry and resolves both `entity`
-    # and `points_to` against seen_ids. See docs/links.md.
+    # and `points_to` against entity_paths. See docs/links.md.
 
-    def _link(self, entity_file, entity_id, points_to_file, points_to_id):
+    def _link(self, entity_id, points_to_id):
         return {
-            "entity": {"deployment_file": entity_file, "deployment_id": entity_id},
+            "entity": entity_id,
             "attribute": "other_side",
-            "points_to": {
-                "deployment_file": points_to_file, "deployment_id": points_to_id,
-            },
+            "points_to": points_to_id,
         }
 
     def test_links_both_sides_resolve(self):
-        # Both halves of a same-file door pair land in seen_ids.
+        # Both halves of a same-file door pair land in entity_paths.
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("a.yaml", 1, "a.yaml", 2),
-            self._link("a.yaml", 2, "a.yaml", 1),
+            self._link(_uid(1), _uid(2)),
+            self._link(_uid(2), _uid(1)),
         ]}})
         v.validate([
-            self._entity(path="a.yaml", deployment_id=1, location=None),
-            self._entity(path="a.yaml", deployment_id=2, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(1), location=None),
+            self._entity(path="a.yaml", entity_id=_uid(2), location=None),
         ])
         self.assertEqual(v.errors, [])
 
     def test_links_cross_file_resolve(self):
+        # A reference names no file, so a link pointing into another
+        # file is resolved by exactly the same index lookup.
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("a.yaml", 1, "b.yaml", 1),
+            self._link(_uid(1), _uid(2)),
         ]}})
         v.validate([
-            self._entity(path="a.yaml", deployment_id=1, location=None),
-            self._entity(path="b.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(1), location=None),
+            self._entity(path="b.yaml", entity_id=_uid(2), location=None),
         ])
         self.assertEqual(v.errors, [])
 
     def test_links_unresolved_entity_reported(self):
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("ghost.yaml", 99, "a.yaml", 1),
+            self._link(_uid(99), _uid(1)),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="a.yaml", deployment_id=1, location=None,
+                path="a.yaml", entity_id=_uid(1), location=None,
             )])
         self.assertTrue(any(
-            "'links[0].entity' cross-ref to" in e and "does not resolve" in e
+            "'links[0].entity' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
     def test_links_unresolved_points_to_reported(self):
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("a.yaml", 1, "ghost.yaml", 99),
+            self._link(_uid(1), _uid(99)),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="a.yaml", deployment_id=1, location=None,
+                path="a.yaml", entity_id=_uid(1), location=None,
             )])
         self.assertTrue(any(
-            "'links[0].points_to' cross-ref to" in e and "does not resolve" in e
+            "'links[0].points_to' reference to" in e and "does not resolve" in e
             for e in v.errors
         ))
 
     def test_links_partial_resolution_reports_only_misses(self):
         # link[0] resolves both sides; link[1].points_to dangles.
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("a.yaml", 1, "a.yaml", 2),
-            self._link("a.yaml", 1, "ghost.yaml", 99),
+            self._link(_uid(1), _uid(2)),
+            self._link(_uid(1), _uid(99)),
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([
-                self._entity(path="a.yaml", deployment_id=1, location=None),
-                self._entity(path="a.yaml", deployment_id=2, location=None),
+                self._entity(path="a.yaml", entity_id=_uid(1), location=None),
+                self._entity(path="a.yaml", entity_id=_uid(2), location=None),
             ])
         unresolved = [e for e in v.errors if "does not resolve" in e]
         self.assertEqual(len(unresolved), 1)
@@ -3731,11 +3670,11 @@ class ValidatorCrossRefResolutionTest(TestCase):
         v = self._validator(
             resolve_cross_refs=False,
             file_metadata={"a.yaml": {"links": [
-                self._link("a.yaml", 1, "ghost.yaml", 99),
+                self._link(_uid(1), _uid(99)),
             ]}},
         )
         v.validate([self._entity(
-            path="a.yaml", deployment_id=1, location=None,
+            path="a.yaml", entity_id=_uid(1), location=None,
         )])
         self.assertFalse(any("does not resolve" in e for e in v.errors))
 
@@ -3747,7 +3686,7 @@ class ValidatorCrossRefResolutionTest(TestCase):
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity(
-                path="a.yaml", deployment_id=1, location=None,
+                path="a.yaml", entity_id=_uid(1), location=None,
             )])
         # Tier 1 finding present:
         self.assertTrue(any(
@@ -3760,12 +3699,12 @@ class ValidatorCrossRefResolutionTest(TestCase):
 
     def test_links_self_reference_resolves(self):
         # entity == points_to is allowed per design — Tier 4 just checks
-        # both refs land in seen_ids; identity is fine.
+        # both refs land in entity_paths; identity is fine.
         v = self._validator(file_metadata={"a.yaml": {"links": [
-            self._link("a.yaml", 1, "a.yaml", 1),
+            self._link(_uid(1), _uid(1)),
         ]}})
         v.validate([self._entity(
-            path="a.yaml", deployment_id=1, location=None,
+            path="a.yaml", entity_id=_uid(1), location=None,
         )])
         self.assertEqual(v.errors, [])
 
