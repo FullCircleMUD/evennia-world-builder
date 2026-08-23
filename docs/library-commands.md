@@ -34,13 +34,14 @@ Build world content from the configured manifest source. Drives the full pipelin
 
 On any validation finding the command surfaces every message via `caller.msg()` and refuses to call the Builder — same complete-refusal semantics as the standalone CLI.
 
-**Validation gating** (see [validation-gating.md](validation-gating.md) for the full model): `definitions.yaml` carries a `repo-ci-pre-validation` flag (default `false`). When false, `wb_build` pre-validates the *whole* repo before every build. When true, it skips the whole-repo walk and trusts the consumer's external CI gate. The `--force-validate` flag forces a whole-repo validation regardless of the setting (per-invocation paranoid override).
+**Validation scope.** Every invocation loads and validates the whole repo before building, then narrows to the requested scope. There is no gated mode and no flag to skip it: cross-file references and repo-wide identity uniqueness are only checkable at full scope. If the walk becomes a bottleneck the fix belongs in the Reader (a bulk fetch), not in validating less.
 
 **Usage:**
 
 - `wb_build all` — build everything in the manifest.
 - `wb_build <level>=<value> [<level>=<value> ...]` — scoped build matching the levels declared in the consumer's `definitions.yaml`.
-- Append `--force-validate` to any of the above to force a whole-repo pre-validation pass for that invocation regardless of the `repo-ci-pre-validation` setting.
+
+The command takes no flags; any `--token` is refused rather than ignored, so a typo can't look like it took effect.
 
 **Bare `wb_build` does nothing.** The explicit `all` keyword is required for a full-world build. This is a deliberate guard rail against accidental rebuilds — a stray Enter on `wb_build` should not start tearing the world apart.
 

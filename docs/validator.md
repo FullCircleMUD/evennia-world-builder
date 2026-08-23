@@ -66,13 +66,15 @@ No environment detection inside predicates. No try/except heuristics that confla
 
 ### Behaviour matrix
 
-|  | `wb-validate` (CI) | `wb-validate` (local dev) | `wb_build` (CI gate off) | `wb_build` (CI gate on, no force) | `wb_build` (CI gate on + `--force-validate`) |
-|---|---|---|---|---|---|
-| Loads | whole repo | whole repo | whole repo | scope only | whole repo |
-| Tier 1 (stateless) | always | always | always | always | always |
-| Tier 2 (stateful per-file) | always | always | always | always | always |
-| Tier 3 (Evennia-runtime) | skipped | skipped (no gamedir loaded) | runs | runs | runs |
-| Tier 4 (cross-ref resolution) | runs | runs | runs | skipped (trust CI) | runs |
+|  | `wb-validate` (CI) | `wb-validate` (local dev) | `wb_build` |
+|---|---|---|---|
+| Loads | whole repo | whole repo | whole repo |
+| Tier 1 (stateless) | always | always | always |
+| Tier 2 (stateful per-file) | always | always | always |
+| Tier 3 (Evennia-runtime) | skipped | skipped (no gamedir loaded) | runs |
+| Tier 4 (cross-ref resolution) | runs | runs | runs |
+
+Every caller loads the whole repo. The only axis that varies is Tier 3, which needs a running Evennia.
 
 ## Complete refusal, not halt-on-first-error
 

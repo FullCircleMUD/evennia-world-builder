@@ -187,29 +187,16 @@ class DefinitionsTest(TestCase):
         d = Definitions.from_reader(reader)
         self.assertEqual(d.levels, ("zone", "room"))
 
-    def test_repo_ci_pre_validation_defaults_false(self):
-        self.assertFalse(Definitions.from_dict({"levels": ["zone"]}).repo_ci_pre_validation)
-
-    def test_repo_ci_pre_validation_explicit_true(self):
-        d = Definitions.from_dict({
-            "levels": ["zone"],
-            "repo-ci-pre-validation": True,
-        })
-        self.assertTrue(d.repo_ci_pre_validation)
-
-    def test_repo_ci_pre_validation_explicit_false(self):
-        d = Definitions.from_dict({
-            "levels": ["zone"],
-            "repo-ci-pre-validation": False,
-        })
-        self.assertFalse(d.repo_ci_pre_validation)
-
-    def test_repo_ci_pre_validation_must_be_bool(self):
-        with self.assertRaises(DefinitionsError):
-            Definitions.from_dict({
-                "levels": ["zone"],
-                "repo-ci-pre-validation": "true",  # string, not bool
-            })
+    def test_repo_ci_pre_validation_key_refused(self):
+        # The setting is gone. A file still carrying the key is refused
+        # rather than ignored, whatever its value — silently dropping it
+        # would leave the consumer believing gating was still in effect.
+        for value in (True, False, "true"):
+            with self.assertRaises(DefinitionsError):
+                Definitions.from_dict({
+                    "levels": ["zone"],
+                    "repo-ci-pre-validation": value,
+                })
 
     def test_strict_attributes_defaults_false(self):
         self.assertFalse(Definitions.from_dict({"levels": ["zone"]}).strict_attributes)
@@ -437,45 +424,43 @@ class CheckShardLevelsTest(TestCase):
 
 
 class ParseArgsTest(TestCase):
-    """Verify the wb_build argument parser (kv pairs + flags + 'all')."""
+    """Verify the wb_build argument parser (kv pairs + 'all')."""
 
     def _parse(self, s):
         from evennia_world_builder.commands import _parse_args
         return _parse_args(s)
 
     def test_all_token_returns_empty_query(self):
-        query, flags = self._parse("all")
-        self.assertEqual(query, {})
-        self.assertEqual(flags, set())
+        self.assertEqual(self._parse("all"), {})
 
     def test_single_pair(self):
-        query, flags = self._parse("zone=millholm")
-        self.assertEqual(query, {"zone": "millholm"})
-        self.assertEqual(flags, set())
+        self.assertEqual(self._parse("zone=millholm"), {"zone": "millholm"})
 
     def test_multiple_pairs(self):
-        query, flags = self._parse("zone=millholm room=bakery")
-        self.assertEqual(query, {"zone": "millholm", "room": "bakery"})
-        self.assertEqual(flags, set())
+        self.assertEqual(
+            self._parse("zone=millholm room=bakery"),
+            {"zone": "millholm", "room": "bakery"},
+        )
 
     def test_extra_whitespace_tolerated(self):
-        query, _ = self._parse("  zone=millholm   room=bakery  ")
-        self.assertEqual(query, {"zone": "millholm", "room": "bakery"})
+        self.assertEqual(
+            self._parse("  zone=millholm   room=bakery  "),
+            {"zone": "millholm", "room": "bakery"},
+        )
 
-    def test_force_validate_flag_with_kv(self):
-        query, flags = self._parse("zone=millholm --force-validate")
-        self.assertEqual(query, {"zone": "millholm"})
-        self.assertEqual(flags, {"force-validate"})
-
-    def test_force_validate_flag_with_all(self):
-        query, flags = self._parse("all --force-validate")
-        self.assertEqual(query, {})
-        self.assertEqual(flags, {"force-validate"})
-
-    def test_flag_position_does_not_matter(self):
-        query, flags = self._parse("--force-validate zone=millholm")
-        self.assertEqual(query, {"zone": "millholm"})
-        self.assertEqual(flags, {"force-validate"})
+    def test_any_flag_refused(self):
+        # The command takes no flags. Refusing beats ignoring: a silently
+        # dropped token reads to the operator as though it took effect.
+        # Covers the removed --force-validate and plain typos alike.
+        for args in (
+            "zone=millholm --force-validate",
+            "all --force-validate",
+            "--force-validate zone=millholm",
+            "--force-validate",
+            "all --typo",
+        ):
+            with self.assertRaises(ValueError):
+                self._parse(args)
 
     def test_empty_input_raises_no_scope(self):
         # Empty / whitespace-only input has no positional tokens — no scope.
@@ -483,11 +468,6 @@ class ParseArgsTest(TestCase):
             self._parse("")
         with self.assertRaises(ValueError):
             self._parse("   ")
-
-    def test_flags_only_raises_no_scope(self):
-        # A flag is not a scope; require 'all' or a level=value pair.
-        with self.assertRaises(ValueError):
-            self._parse("--force-validate")
 
     def test_token_without_equals_raises(self):
         with self.assertRaises(ValueError):

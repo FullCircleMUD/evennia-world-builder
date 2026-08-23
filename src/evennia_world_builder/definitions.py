@@ -25,14 +25,6 @@ class Definitions:
                 Empty tuple () is valid and means a flat world (only an
                 empty query is meaningful — `find()` returns root, Loader
                 walks everything from there).
-        repo_ci_pre_validation:
-                Consumer's assertion that the content repo has a CI gate
-                running wb-validate on every PR (e.g. GitHub branch
-                protection + required status check). False (the safe
-                default) makes wb_build pre-validate the whole repo before
-                every build; True trusts the gate and skips that work.
-                The library cannot verify this assertion — see
-                docs/validation-gating.md for rationale.
         strict_attributes:
                 Scaffolded for a future feature, currently inert. The
                 planned behaviour: when True, the validator will reject
@@ -50,7 +42,6 @@ class Definitions:
     """
 
     levels: tuple = ()
-    repo_ci_pre_validation: bool = False
     strict_attributes: bool = False
 
     @classmethod
@@ -82,11 +73,15 @@ class Definitions:
                     f"{source_path}: 'levels' entries must be strings; got {level!r}"
                 )
 
-        gating = data.get("repo-ci-pre-validation", False)
-        if not isinstance(gating, bool):
+        if "repo-ci-pre-validation" in data:
+            # The setting is gone: wb_build pre-validates the whole repo
+            # on every build, with no way to opt out. Refuse rather than
+            # ignore — a consumer whose YAML still carries the key would
+            # otherwise believe they had turned the whole-repo walk off.
             raise DefinitionsError(
-                f"{source_path}: 'repo-ci-pre-validation' must be a boolean, "
-                f"got {type(gating).__name__}"
+                f"{source_path}: 'repo-ci-pre-validation' is no longer a "
+                "setting — remove the key. Every build pre-validates the "
+                "whole repo; there is no gated mode to opt into."
             )
 
         strict_attrs = data.get("strict-attributes", False)
@@ -110,7 +105,6 @@ class Definitions:
 
         return cls(
             levels=tuple(levels),
-            repo_ci_pre_validation=gating,
             strict_attributes=strict_attrs,
         )
 
