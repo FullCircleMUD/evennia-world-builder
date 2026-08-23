@@ -425,6 +425,22 @@ class CmdWBBuild(BaseCommand):
 
         entities = _filter_by_query(all_entities, query)
 
+        # A scope that matches nothing is a typo, not a build. Refusing
+        # matters more than it looks: cleanup is scoped to the same
+        # empty set, so the alternative is reporting success having
+        # touched nothing — the operator believes the world changed and
+        # finds out otherwise much later.
+        if query and not entities:
+            scope = " ".join(f"{k}={v}" for k, v in query.items())
+            msg = (
+                f"wb_build: {scope} matches no entities — nothing built. "
+                f"Check the spelling against the manifest; a level value "
+                f"must match an index entry exactly."
+            )
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
+            return messages
+
         messages.append("wb_build: validation complete")
         messages.append("wb_build: starting building")
         wb_log(f"wb_build: validation complete ({len(entities)} entities in scope)")

@@ -58,7 +58,7 @@ The command takes no flags; any `--token` is refused rather than ignored, so a t
 - Reader misconfiguration → error from `get_configured_reader()`.
 - `definitions.yaml` missing or malformed → error from `Definitions.from_reader()`.
 - Query key not in declared levels, or skips a level → `DefinitionsError` (caught at validation, before any walk).
-- Query value not found in the manifest → `FinderQueryError` (caught during the walk).
+- Query value that matches no entity → refusal naming the scope. The whole-repo load means an unmatched value is indistinguishable from an empty one, and cleanup is scoped to the same empty set — so without this the command would report a successful build having touched nothing.
 - Index missing in a folder, or pointing at a non-existent file → `LoaderError` subtype.
 - Validator findings (e.g. missing required field, malformed shape, unresolvable typeclass, duplicate `entity_id`) → every message echoed, then `wb_build` refuses without invoking the Builder.
 - Builder failure (typeclass instantiation error, tag/lock/attribute application exception, cleanup deletion failure) → wrapped in `BuilderError`, surfaced via `caller.msg`, no further entities processed.

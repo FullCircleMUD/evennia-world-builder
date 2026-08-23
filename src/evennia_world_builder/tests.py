@@ -574,6 +574,84 @@ class FilterByQueryTest(TestCase):
         self.assertEqual(result, [])
 
 
+class PipelineEmptyScopeTest(TestCase):
+    """Verify wb_build refuses a scope that matches nothing.
+
+    A mistyped level value used to reach the Builder with an empty
+    entity list and report a successful build of zero objects. Cleanup
+    is scoped to the same empty set, so nothing happened at all — the
+    operator reads success and discovers the world is unchanged much
+    later. Drives the real ``_run_pipeline`` rather than the filter
+    helper, because the guard is about what the command reports.
+    """
+
+    FILES = {
+        "definitions.yaml": {"levels": ["zone", "room"]},
+        "index.yaml": {"entries": [{"name": "millholm", "kind": "folder"}]},
+        "millholm/index.yaml": {"entries": [{"name": "inn", "kind": "file"}]},
+        "millholm/inn.yaml": {
+            "file_id": _uid(0xF11E),
+            "entities": [{
+                "entity_id": _uid(1),
+                "typeclass": "evennia.objects.objects.DefaultRoom",
+                "name": "The Crooked Lantern",
+                "location": None,
+            }],
+        },
+    }
+
+    def _run(self, query):
+        from evennia_world_builder.commands import CmdWBBuild
+        return CmdWBBuild()._run_pipeline(query)
+
+    def _settings(self):
+        return override_settings(
+            WORLDBUILDER_READER="evennia_world_builder.tests.FixtureReader",
+            WORLDBUILDER_READER_KWARGS={"files": self.FILES},
+        )
+
+    def test_unmatched_scope_refuses(self):
+        with self._settings():
+            messages = self._run({"zone": "millhom"})  # transposed letters
+        self.assertTrue(any("matches no entities" in m for m in messages))
+        self.assertTrue(any("zone=millhom" in m for m in messages))
+
+    def test_unmatched_scope_does_not_reach_the_builder(self):
+        with self._settings():
+            messages = self._run({"zone": "millhom"})
+        self.assertFalse(any("starting building" in m for m in messages))
+        self.assertFalse(any("finished building" in m for m in messages))
+
+    def test_unmatched_deeper_level_refuses(self):
+        # The zone exists; the room doesn't. Partial matches are the
+        # likelier typo and must refuse just the same.
+        with self._settings():
+            messages = self._run({"zone": "millholm", "room": "in"})
+        self.assertTrue(any("matches no entities" in m for m in messages))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_matched_scope_still_builds(self, mock_create, _mock_search):
+        # The guard must not fire on a scope that does match — the
+        # regression risk of adding it.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        with self._settings():
+            messages = self._run({"zone": "millholm"})
+        self.assertFalse(any("matches no entities" in m for m in messages))
+        self.assertTrue(any("finished building" in m for m in messages))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_empty_query_builds_everything(self, mock_create, _mock_search):
+        # `wb_build all` arrives as an empty query and must never be
+        # read as "matched nothing".
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        with self._settings():
+            messages = self._run({})
+        self.assertFalse(any("matches no entities" in m for m in messages))
+        self.assertTrue(any("finished building" in m for m in messages))
+
+
 class FinderTest(TestCase):
     """Verify Finder.find() against a synthetic manifest tree."""
 
