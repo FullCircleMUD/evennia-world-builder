@@ -11,9 +11,7 @@ Conventions for any command shipping from world-builder:
   game does not need to import or wire these manually.
 
 See docs/discovery-and-loading.md for the pipeline these commands
-ultimately exercise. Validation gating (when wb_build pre-validates
-the whole repo vs trusting the consumer's CI gate) is documented in
-docs/validation-gating.md.
+ultimately exercise.
 """
 
 from evennia.commands.command import Command as BaseCommand
@@ -42,7 +40,6 @@ from .errors import (
     BuilderError,
     DefinitionsError,
     FinderManifestError,
-    FinderQueryError,
     LoaderMissingEntryError,
     LoaderMissingIndexError,
     ValidatorError,
@@ -54,7 +51,6 @@ from .validator import Validator
 
 
 _ALL_TOKEN = "all"
-_FORCE_VALIDATE_FLAG = "force-validate"
 
 SHARD_LEVEL = "shard"
 """The level name that carries the shard id when co-installed with shards.
@@ -132,27 +128,29 @@ def check_shard_levels(definitions) -> str | None:
     return None
 
 
-def _parse_args(args_str: str) -> tuple[dict, set]:
-    """Parse ``all | level=value...  [--flag...]`` into ``(query, flags)``.
+def _parse_args(args_str: str) -> dict:
+    """Parse ``all | level=value...`` into a query dict.
 
     Returns:
         query: dict of level → value. Empty dict means the literal ``all``
                token was supplied (build-everything scope).
-        flags: set of flag names (with the leading ``--`` stripped).
 
     Raises:
-        ValueError: if no scope token is present, if a non-flag token
-                    is malformed, or if either side of an ``=`` is empty.
+        ValueError: if any flag token is present (the command takes none),
+                    if no scope token is present, if a token is malformed,
+                    or if either side of an ``=`` is empty.
     """
     pairs: dict = {}
-    flags: set = set()
     positional: list = []
 
     for token in args_str.split():
         if token.startswith("--"):
-            flags.add(token[2:])
-        else:
-            positional.append(token)
+            # No flags exist. Refusing beats ignoring: a silently dropped
+            # token reads to the operator as though it took effect.
+            raise ValueError(
+                f"Unknown flag {token!r} — wb_build takes no flags"
+            )
+        positional.append(token)
 
     if not positional:
         raise ValueError(
@@ -160,7 +158,7 @@ def _parse_args(args_str: str) -> tuple[dict, set]:
         )
 
     if positional == [_ALL_TOKEN]:
-        return pairs, flags
+        return pairs
 
     for token in positional:
         if "=" not in token:
@@ -175,7 +173,8 @@ def _parse_args(args_str: str) -> tuple[dict, set]:
                 f"Argument {token!r}: both key and value must be non-empty"
             )
         pairs[key] = value
-    return pairs, flags
+
+    return pairs
 
 
 def _filter_by_query(entities: list, query: dict) -> list:
@@ -196,18 +195,19 @@ def _run_validator(
     messages: list, definitions, entities, refusal_label, *,
     resolve_cross_refs: bool,
     file_metadata: dict | None = None,
-) -> bool:
+) -> dict | None:
     """Run a Validator pass over entities. Append every message to ``messages``.
 
-    Returns True on a clean pass, False if the validator refused. Callers
-    should return early on False. wb_build runs inside Evennia, so the
-    validator gets evennia_runtime=True (Tier 3 predicates fire — e.g.
-    typeclass-resolvable). ``resolve_cross_refs`` is True only for the
-    whole-repo pre-validation path; scope-only validation trusts CI for
-    cross-ref resolution and skips Tier 4 (its seen_ids index would be
-    incomplete and produce false-positive misses on cross-file refs).
-    ``file_metadata`` is the per-file metadata dict from Loader.LoadResult,
-    used for file-level checks (incoming_exits shape + Tier 4 resolution).
+    Returns the entity index (``{entity_id: file path}``) on a clean
+    pass, or None if the validator refused — callers should return early
+    on None. The index goes on to the Builder, which needs it to get
+    from a reference back to the YAML that declares its target.
+
+    wb_build runs inside Evennia, so the validator gets
+    evennia_runtime=True (Tier 3 predicates fire — e.g.
+    typeclass-resolvable). ``file_metadata`` is the per-file metadata
+    dict from Loader.LoadResult, used for file-level checks (file_id,
+    incoming_exits shape, and Tier 4 resolution).
 
     Output goes via the ``messages`` list so the caller can flush it to
     ``caller.msg`` from the reactor thread (this helper itself runs in a
@@ -220,7 +220,7 @@ def _run_validator(
         file_metadata=file_metadata,
     )
     try:
-        validator.validate(entities)
+        entity_paths = validator.validate(entities)
     except ValidatorError as e:
         messages.extend(validator.messages)
         messages.append(f"wb_build: refusing to build — {refusal_label}: {e}")
@@ -230,32 +230,30 @@ def _run_validator(
         )
         for finding in validator.messages:
             wb_log(f"  validator: {finding}", level="INFO")
-        return False
+        return None
     # On success: do not flush validator.messages (the success-path
     # messages are diagnostic noise for the operator). Failures still
     # get them above so findings reach the caller.
-    return True
+    return entity_paths
 
 
 class CmdWBBuild(BaseCommand):
     """Build world content from the configured manifest source.
 
     Usage:
-        wb_build all [--force-validate]
-        wb_build <level>=<value> [<level>=<value> ...] [--force-validate]
+        wb_build all
+        wb_build <level>=<value> [<level>=<value> ...]
 
     A bare ``wb_build`` with no scope does nothing — the explicit
     ``all`` keyword is required to build the entire world. This is a
     deliberate guard rail against an accidental full-world rebuild.
 
-    Validation gating: ``definitions.yaml`` carries a
-    ``repo-ci-pre-validation`` flag (default ``false``). When false,
-    wb_build pre-validates the whole repo before every build — safe
-    but expensive at scale. When the consumer has set up CI to gate
-    PRs (GitHub branch protection + required wb-validate check), they
-    can flip the flag to true and wb_build will skip the whole-repo
-    walk and trust the gate. ``--force-validate`` overrides the flag
-    for one invocation: pre-validate this run regardless.
+    Every invocation pre-validates the whole repo before building,
+    however small the requested scope. There is no gated mode and no
+    flag to skip it: correctness of cross-file references and of
+    repo-wide identity uniqueness can only be established at full
+    scope, and the cost of the walk belongs to the Reader rather than
+    to the validation pass.
 
     Examples (assuming ``levels: [zone, room]``):
 
@@ -267,10 +265,6 @@ class CmdWBBuild(BaseCommand):
 
         wb_build zone=millholm room=bakery
             Build the single room.
-
-        wb_build zone=millholm room=bakery --force-validate
-            Same, but pre-validate the whole repo first regardless of
-            the gating setting.
 
     On a sharded deployment (the shards library installed and the role
     not ``monolith``), the first declared level must be ``shard`` and its
@@ -300,7 +294,7 @@ class CmdWBBuild(BaseCommand):
             return
 
         try:
-            query, flags = _parse_args(args)
+            query = _parse_args(args)
         except ValueError as e:
             self.caller.msg(f"wb_build: {e}")
             return
@@ -326,12 +320,12 @@ class CmdWBBuild(BaseCommand):
         # installed (see top-of-file import).
         self.caller.msg(f"wb_build {args} : running async (gameplay continues)…")
         run_async(
-            preserve_tenant_context(self._run_pipeline), query, flags,
+            preserve_tenant_context(self._run_pipeline), query,
             at_return=self._on_async_return,
             at_err=self._on_async_err,
         )
 
-    def _run_pipeline(self, query: dict, flags: set) -> list:
+    def _run_pipeline(self, query: dict) -> list:
         """Worker-thread entrypoint: runs the entire build pipeline.
 
         Collects every operator-facing line into a list of messages and
@@ -346,11 +340,7 @@ class CmdWBBuild(BaseCommand):
         scope_desc = "all" if not query else " ".join(
             f"{k}={v}" for k, v in query.items()
         )
-        flag_desc = " ".join(f"--{f}" for f in sorted(flags)) if flags else ""
-        wb_log(
-            f"wb_build started: scope={scope_desc}"
-            + (f" {flag_desc}" if flag_desc else "")
-        )
+        wb_log(f"wb_build started: scope={scope_desc}")
 
         try:
             reader = get_configured_reader()
@@ -397,85 +387,43 @@ class CmdWBBuild(BaseCommand):
         finder = Finder(reader, definitions)
         loader = Loader(reader, definitions)
 
-        # Decide whether to pre-validate the whole repo. The setting is the
-        # consumer's persistent claim ("I have CI gating"); the flag is an
-        # ad-hoc per-invocation override. Pre-validation runs whenever EITHER
-        # the setting is False (default safe) OR the flag is present.
-        force_validate = _FORCE_VALIDATE_FLAG in flags
-        should_pre_validate = (not definitions.repo_ci_pre_validation) or force_validate
-
+        # One path: load and validate the whole repo, then narrow to the
+        # requested scope. Cross-file references and repo-wide identity
+        # uniqueness are only checkable at full scope, so the walk runs
+        # however small the build.
         messages.append("wb_build: starting validation")
-        wb_log(
-            "wb_build: validation started "
-            f"({'pre-validate whole repo' if should_pre_validate else 'scope-only'})"
+        wb_log("wb_build: validation started (whole repo)")
+
+        try:
+            load_result = loader.load(finder.find())
+        except FinderManifestError as e:
+            msg = f"wb_build: manifest error during pre-validation: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
+            return messages
+        except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
+            msg = f"wb_build: pre-validation load failed: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
+            return messages
+        except ReaderError as e:
+            msg = f"wb_build: read error during pre-validation: {e}"
+            messages.append(msg)
+            wb_log(msg, level="ERROR")
+            return messages
+
+        all_entities = load_result.entities
+        file_metadata = load_result.file_metadata
+
+        entity_paths = _run_validator(
+            messages, definitions, all_entities, "pre-validation failed",
+            resolve_cross_refs=True,
+            file_metadata=file_metadata,
         )
+        if entity_paths is None:
+            return messages
 
-        if should_pre_validate:
-            try:
-                load_result = loader.load(finder.find())
-            except FinderManifestError as e:
-                msg = f"wb_build: manifest error during pre-validation: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-            except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                msg = f"wb_build: pre-validation load failed: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-            except ReaderError as e:
-                msg = f"wb_build: read error during pre-validation: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-
-            all_entities = load_result.entities
-            file_metadata = load_result.file_metadata
-
-            if not _run_validator(
-                messages, definitions, all_entities, "pre-validation failed",
-                resolve_cross_refs=True,
-                file_metadata=file_metadata,
-            ):
-                return messages
-
-            entities = _filter_by_query(all_entities, query)
-        else:
-            try:
-                found = finder.find(query)
-            except FinderQueryError as e:
-                msg = f"wb_build: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-            except FinderManifestError as e:
-                msg = f"wb_build: manifest error: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-
-            try:
-                load_result = loader.load(found)
-            except (LoaderMissingIndexError, LoaderMissingEntryError) as e:
-                msg = f"wb_build: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-            except ReaderError as e:
-                msg = f"wb_build: read error during loading: {e}"
-                messages.append(msg)
-                wb_log(msg, level="ERROR")
-                return messages
-
-            entities = load_result.entities
-            file_metadata = load_result.file_metadata
-
-            if not _run_validator(
-                messages, definitions, entities, "validation failed",
-                resolve_cross_refs=False,
-                file_metadata=file_metadata,
-            ):
-                return messages
+        entities = _filter_by_query(all_entities, query)
 
         messages.append("wb_build: validation complete")
         messages.append("wb_build: starting building")
@@ -486,6 +434,7 @@ class CmdWBBuild(BaseCommand):
             definitions,
             file_metadata=file_metadata,
             reader=reader,
+            entity_paths=entity_paths,
         )
         try:
             created = builder.build(entities)

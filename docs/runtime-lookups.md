@@ -1,14 +1,14 @@
 # Runtime Lookups
 
-The library exposes a small `api` module of helpers that consumer **game code** — commands, scripts, typeclass methods — calls at runtime to resolve a stable `(deployment_file, deployment_id)` identity pair to an Evennia object or dbref.
+The library exposes a small `api` module of helpers that consumer **game code** — commands, scripts, typeclass methods — calls at runtime to resolve a stable `entity_id` to an Evennia object or dbref.
 
 This is a second public surface alongside the in-game admin commands (`wb_build`, see [library-commands.md](library-commands.md)) and the build-time pipeline classes (Builder/Validator/Loader/Finder). Those run during a build; the helpers here run during normal gameplay.
 
 ## Motivation
 
-Builder-authored objects are identified by `(deployment_file, deployment_id)` (see [deployment-identity.md](deployment-identity.md)). That pair is **constant across redeploys**: a `wb_build` cleans up and recreates the underlying Evennia objects, so dbrefs change, but the identity pair stays the same.
+Builder-authored objects are identified by their `entity_id` (see [deployment-identity.md](deployment-identity.md)). It is **constant across redeploys**: a `wb_build` cleans up and recreates the underlying Evennia objects, so dbrefs change, but the id stays the same. It also survives the entity being moved to a different file.
 
-Consumer game code that needs to refer to a specific library-built object — "the bakery counter", "the shrine altar", "the room the quest NPC retreats to at night" — should resolve the identity pair at runtime rather than hard-coding a dbref. The hard-coded dbref goes stale on the next `wb_build`; the identity pair survives.
+Consumer game code that needs to refer to a specific library-built object — "the bakery counter", "the shrine altar", "the room the quest NPC retreats to at night" — should resolve the id at runtime rather than hard-coding a dbref. The hard-coded dbref goes stale on the next `wb_build`; the id survives.
 
 ## Naming convention
 
@@ -26,34 +26,34 @@ Imported from the package root:
 from evennia_world_builder import wb_lookup_dbref, wb_lookup_object
 ```
 
-### `wb_lookup_dbref(deployment_file, deployment_id) -> str | None`
+### `wb_lookup_dbref(entity_id) -> str | None`
 
 Returns the matching object's dbref as Evennia's `#<id>` string (drop-in for `search()` calls, command handlers, `obj.dbref` comparisons), or `None` if no object matches.
 
 **No typeclass instantiation.** Goes straight to `ObjectDB` via the Django ORM and reads back the integer primary key only — no `at_init` hook fires, no idmapper cache entry warms. Use this when the dbref is all you need.
 
-### `wb_lookup_object(deployment_file, deployment_id) -> Object | None`
+### `wb_lookup_object(entity_id) -> Object | None`
 
 Returns the live typeclass instance, or `None` if no object matches. Use this when you actually need to operate on the object (read attributes, call methods, etc.) rather than just identify it.
 
 ## Contract
 
 - **Returns `None` on no match.** A missing object at runtime is a normal case (the build may not have run yet, the file may be redeployed in pieces, the author may have removed the entity). Callers check for `None` rather than wrapping in try/except.
-- **Raises `ApiError` on multiple matches.** Should be unreachable if the Builder's cleanup-on-rebuild invariant holds — the `(deployment_file, deployment_id)` pair is supposed to be globally unique. If it fires, something has gone wrong in cleanup integrity and the operator needs to know loudly.
-- **Identity arguments mirror the YAML.** `deployment_file` is the full repo-root-relative path exactly as the Reader sees it (`"millholm/forest.yaml"`, not `"forest"` or `"millholm.forest"`); `deployment_id` is the author-supplied integer.
+- **Raises `ApiError` on multiple matches.** Should be unreachable if the Builder's cleanup-on-rebuild invariant holds — an `entity_id` is globally unique, and the Validator refuses a repo that declares one twice. If it fires, cleanup integrity has broken and the operator needs to know loudly.
+- **The argument mirrors the YAML.** `entity_id` is the value the author declared on the entity.
 - **No Evennia bootstrap done for you.** These run inside Evennia; if you invoke them from a context where Evennia isn't initialised (a standalone script, a fixture loader before `django.setup()`), the lazy imports will fail. Same constraint as every other call into Evennia.
 
 ## Implementation
 
-Both functions share the same indexed two-tag query implemented in the private `_query_object_ids` helper. The query uses chained `.filter()` calls on `ObjectDB`'s `db_tags` M2M to force two separate joins — a returned row must carry **both** the `wb_deployment_file` tag and the `wb_deployment_id` tag matching the requested pair. Single multi-argument `.filter()` calls would AND the conditions on a single joined row, which is wrong for M2M lookups.
+Both functions share the same indexed query implemented in the private `_query_object_ids` helper: a single join on `ObjectDB`'s `db_tags` M2M selecting the `wb_entity_id` tag.
 
 The query filters on `db_key__iexact` and `db_category__iexact` (both indexed columns on the `Tag` model), plus `db_tagtype__isnull=True` (excludes alias/permission tags) and `db_model__iexact="objectdb"` (scopes the join to object-side tags). This mirrors what Evennia's own `get_by_tag` does for normal tags.
 
 ### Complexity
 
-**O(log n) on the Tag-table size.** Two indexed B-tree seeks, one per join. Independent of how many entities share the same `deployment_file` — a 1-room file and a 500-room file cost the same query.
+**O(log n) on the Tag-table size.** One indexed B-tree seek. Independent of how many entities the file declares — a 1-room file and a 500-room file cost the same query.
 
-Notably better than the pattern in `Builder._lookup_in_db`, which calls Evennia's `search_tag` to pull all candidates sharing the `deployment_file` tag and then loops in Python checking each candidate's `deployment_id`. That's O(k) over file length plus k typeclass inflations; the runtime lookups skip both costs.
+`Builder._lookup_in_db` reaches the same result through Evennia's `search_tag`, which inflates typeclasses; the runtime lookups skip that cost.
 
 ### Why not reuse `Builder._lookup_in_db`?
 
@@ -65,8 +65,8 @@ The two paths could converge if Builder's lookup were ported to the same indexed
 
 ## Out of scope (deferred)
 
-- **Bulk lookups** (`wb_lookup_dbrefs(file)` → all dbrefs in a file). Would let consumers enumerate "every room in this zone"-style queries. Mechanism is straightforward (drop the `deployment_id` join, return all ids) but no concrete consumer need yet.
-- **Reverse lookup** (object → identity pair). The data lives on `obj.tags` already; ergonomics question is whether a helper is worth shipping.
+- **Bulk lookups** (`wb_lookup_dbrefs(file_id)` → every dbref from one file). Would let consumers enumerate "every room in this zone"-style queries. Mechanism is straightforward — query `wb_file_id` instead — but no concrete consumer need yet.
+- **Reverse lookup** (object → `entity_id`). The data lives on `obj.tags` already; ergonomics question is whether a helper is worth shipping.
 - **Caching layer.** The query is fast enough that adding a cache would just introduce invalidation problems on rebuild. Reconsider if profiling ever shows it dominating a hot path.
 - **`AccountDB` / `ScriptDB` variants.** The library only creates objects today. If `Account` or `Script` creation ever lands, these helpers grow siblings on the appropriate model.
 

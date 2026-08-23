@@ -29,18 +29,19 @@ evennia-world-builder ships admin commands that auto-install into any consumer g
 
 Build world content from the configured manifest source. Drives the full pipeline: `Definitions → Finder → Loader → Validator → Builder`. On a clean validator pass the Builder runs and:
 
-- **cleans up** prior deployments of the source files in this build's scope (Evennia objects tagged `wb_deployment_file=<file>` are deleted before fresh ones are created — see [builder.md](builder.md) and [deployment-identity.md](deployment-identity.md));
-- **creates one Evennia object per entity** with all standard per-object dimensions applied: `typeclass`, `name`, `location`, `description`, `aliases`, `tags` (author tags plus the auto-set `wb_deployment_file` / `wb_deployment_id` pair), `locks`, `attributes` (YAML overriding any typeclass defaults).
+- **cleans up** prior deployments of the source files in this build's scope (Evennia objects tagged `wb_file_id=<the file's declared id>` are deleted before fresh ones are created — see [builder.md](builder.md) and [deployment-identity.md](deployment-identity.md));
+- **creates one Evennia object per entity** with all standard per-object dimensions applied: `typeclass`, `name`, `location`, `description`, `aliases`, `tags` (author tags plus the auto-set `wb_file_id` / `wb_entity_id` pair), `locks`, `attributes` (YAML overriding any typeclass defaults).
 
 On any validation finding the command surfaces every message via `caller.msg()` and refuses to call the Builder — same complete-refusal semantics as the standalone CLI.
 
-**Validation gating** (see [validation-gating.md](validation-gating.md) for the full model): `definitions.yaml` carries a `repo-ci-pre-validation` flag (default `false`). When false, `wb_build` pre-validates the *whole* repo before every build. When true, it skips the whole-repo walk and trusts the consumer's external CI gate. The `--force-validate` flag forces a whole-repo validation regardless of the setting (per-invocation paranoid override).
+**Validation scope.** Every invocation loads and validates the whole repo before building, then narrows to the requested scope. There is no gated mode and no flag to skip it: cross-file references and repo-wide identity uniqueness are only checkable at full scope. If the walk becomes a bottleneck the fix belongs in the Reader (a bulk fetch), not in validating less.
 
 **Usage:**
 
 - `wb_build all` — build everything in the manifest.
 - `wb_build <level>=<value> [<level>=<value> ...]` — scoped build matching the levels declared in the consumer's `definitions.yaml`.
-- Append `--force-validate` to any of the above to force a whole-repo pre-validation pass for that invocation regardless of the `repo-ci-pre-validation` setting.
+
+The command takes no flags; any `--token` is refused rather than ignored, so a typo can't look like it took effect.
 
 **Bare `wb_build` does nothing.** The explicit `all` keyword is required for a full-world build. This is a deliberate guard rail against accidental rebuilds — a stray Enter on `wb_build` should not start tearing the world apart.
 
@@ -59,7 +60,7 @@ On any validation finding the command surfaces every message via `caller.msg()` 
 - Query key not in declared levels, or skips a level → `DefinitionsError` (caught at validation, before any walk).
 - Query value not found in the manifest → `FinderQueryError` (caught during the walk).
 - Index missing in a folder, or pointing at a non-existent file → `LoaderError` subtype.
-- Validator findings (e.g. missing required field, malformed shape, unresolvable typeclass, duplicate `deployment_id`) → every message echoed, then `wb_build` refuses without invoking the Builder.
+- Validator findings (e.g. missing required field, malformed shape, unresolvable typeclass, duplicate `entity_id`) → every message echoed, then `wb_build` refuses without invoking the Builder.
 - Builder failure (typeclass instantiation error, tag/lock/attribute application exception, cleanup deletion failure) → wrapped in `BuilderError`, surfaced via `caller.msg`, no further entities processed.
 
 The command echoes each pipeline stage (pre-validation reason, validator findings, cleanup count, created objects) for visual verification. The output shape is a debugging aid; not part of any contract.

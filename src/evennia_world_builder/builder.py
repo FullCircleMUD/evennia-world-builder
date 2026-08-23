@@ -11,8 +11,8 @@ re-checking shape.
 
 See docs/builder.md for the architectural rationale (clean-then-rebuild,
 two-pass entity creation, DB fallback for cross-file refs, no partial
-state) and docs/deployment-identity.md for the (deployment_file,
-deployment_id) identity scheme referenced throughout this module.
+state) and docs/deployment-identity.md for the file_id + entity_id
+identity scheme referenced throughout this module.
 """
 import ast
 
@@ -33,8 +33,8 @@ from .log import wb_log
 # validator's `wb_*` prefix check — adding a new `wb_*` category here without
 # a matching update to the validator's reserved-prefix check would let an
 # author tag collide with a Builder-set tag silently.
-_TAG_CATEGORY_DEPLOYMENT_FILE = "wb_deployment_file"
-_TAG_CATEGORY_DEPLOYMENT_ID = "wb_deployment_id"
+_TAG_CATEGORY_FILE_ID = "wb_file_id"
+_TAG_CATEGORY_ENTITY_ID = "wb_entity_id"
 
 # Per-entity post-apply hook — see docs/post-build-hook.md. Consumer
 # typeclasses that need to derive state from YAML-supplied attributes
@@ -51,8 +51,8 @@ class Builder:
     every build() call sweeps prior deployments of the affected files and
     recreates from the current YAML, so the same YAML applied N times
     produces the same end state. Object dbrefs increment (Evennia never
-    reuses them), but the count of objects tagged with each
-    deployment_file stays at exactly the YAML's declared count.
+    reuses them), but the count of objects tagged with each ``file_id``
+    stays at exactly the YAML's declared count.
 
     Instances are reusable across multiple build() calls — deleted_count
     and _built_by_id are per-build state, reset at the start of each call.
@@ -62,6 +62,7 @@ class Builder:
         self, definitions: Definitions, *,
         file_metadata: dict | None = None,
         reader: Reader | None = None,
+        entity_paths: dict | None = None,
     ):
         """Construct a Builder against a Definitions and optional file context.
 
@@ -71,9 +72,18 @@ class Builder:
 
         file_metadata is the per-file metadata dict from
         Loader.LoadResult.file_metadata — file-level keys extracted by
-        the Loader. Currently consumed: incoming_exits (walked by pass 3
-        for cross-file dependency restore) and links (walked by pass 4
-        for cross-entity attribute references; see docs/links.md).
+        the Loader. Consumed for each file's ``file_id`` (the cleanup
+        sweep key and the tag every object from that file carries),
+        ``incoming_exits`` (walked by pass 3 for cross-file dependency
+        restore) and ``links`` (walked by pass 4 for cross-entity
+        attribute references; see docs/links.md).
+
+        entity_paths is the entity index returned by Validator.validate()
+        — ``{entity_id: file path}``. A reference names no file, so this
+        is the only way pass 3 can get from a registered dependency back
+        to the YAML that declares it. Optional for the same reason as
+        reader: a Builder without one still builds, and pass 3 refuses
+        only if it actually needs the lookup.
 
         reader is the configured Reader, used by pass 3 to fetch
         canonical files when an incoming_exits target is missing from
@@ -83,7 +93,14 @@ class Builder:
         """
         self.definitions = definitions
         self.deleted_count: int = 0
+        # {entity_id: object} for everything built or DB-resolved during
+        # this build() call. An entity_id is globally unique, so this is
+        # a flat map rather than the per-file nesting identity used to
+        # need.
         self._built_by_id: dict = {}
+        # {entity_id: file path} from Validator.validate(). Pass 3 reads
+        # it to locate a missing dependency's canonical file.
+        self.entity_paths: dict = dict(entity_paths or {})
         # Per-file metadata from Loader.LoadResult — file-level keys
         # like incoming_exits: extracted by the Loader. Pass 3 walks
         # this dict's incoming_exits lists for files in the build set.
@@ -128,8 +145,9 @@ class Builder:
         Field expectations (guaranteed by the Validator's Tier 1
         predicates before this runs): content["name"] and
         content["typeclass"] are non-empty strings; content["location"]
-        is null (orphan) or a strict {deployment_file, deployment_id}
-        cross-ref; content["deployment_id"] is a non-negative integer.
+        is null (orphan) or a reference naming the target's entity_id;
+        content["entity_id"] is a UUID string, and the entity's file
+        declares a file_id in file_metadata.
         Optional: content["description"] (default ""), content["destination"]
         (marks the entity an exit, built in pass 2), content["home"] (null
         -> nohome=True, since passing home=None to create_object falls
@@ -144,7 +162,7 @@ class Builder:
         from evennia.utils.create import create_object
 
         file_paths = {e.path for e in entities}
-        self._cleanup(file_paths)
+        self._cleanup(self._file_ids_for(file_paths))
 
         # Pass 1+2: non-exits first so their dbrefs land in _built_by_id,
         # then exits (their destinations may point at any non-exit).
@@ -173,6 +191,32 @@ class Builder:
 
         return created
 
+    def _file_id_for(self, path: str) -> str:
+        """The declared ``file_id`` for a source file path.
+
+        Every entity file declares one — the Validator refuses a build
+        otherwise — so a miss here means the Builder was handed metadata
+        the Validator never saw. Refuse rather than skip: a file with no
+        file_id can't be swept, and silently not sweeping is how a
+        rebuild leaves the previous deployment's objects behind.
+        """
+        meta = self.file_metadata.get(path)
+        file_id = meta.get("file_id") if isinstance(meta, dict) else None
+        if not file_id:
+            raise BuilderError(
+                f"{path!r}: no 'file_id' in file metadata — cannot scope "
+                f"cleanup or tag the objects this file creates"
+            )
+        return file_id
+
+    def _file_ids_for(self, file_paths) -> dict:
+        """``{file_id: path}`` for every path in the build set.
+
+        Path is carried alongside purely so failures name the file the
+        operator recognises rather than a UUID.
+        """
+        return {self._file_id_for(path): path for path in file_paths}
+
     def _build_one(self, entity: LoadedEntity, create_object) -> object:
         """Build a single entity through create_object + apply_* steps.
 
@@ -181,7 +225,7 @@ class Builder:
         optional home: field (null -> nohome=True; a cross-ref dict ->
         home=<resolved obj>; absent -> no kwarg, falls back to
         settings.DEFAULT_HOME), calls create_object, stashes the result
-        in _built_by_id keyed by (path, deployment_id), then applies
+        in _built_by_id keyed by entity_id, then applies
         aliases/locks/attributes/tags and finally invokes the optional
         wb_at_post_build hook. Wraps every step in BuilderError so
         failures surface with contextual messages naming the offending
@@ -256,8 +300,8 @@ class Builder:
                 f"failed to create object for {entity.path!r}: {e}"
             ) from e
 
-        # Stash for cross-ref resolution within this build pass.
-        self._built_by_id[(entity.path, content["deployment_id"])] = obj
+        # Stash for reference resolution within this build pass.
+        self._built_by_id[content["entity_id"]] = obj
 
         try:
             self._apply_aliases(obj, entity)
@@ -299,14 +343,14 @@ class Builder:
         """Walk incoming_exits for every file in scope; build any missing refs.
 
         For each file path in the build set that has file_metadata:
-        - For each `(deployment_file, deployment_id)` ref in its
-          ``incoming_exits:`` list:
+        - For each ``entity_id`` reference in its ``incoming_exits:``
+          list:
           - If already in ``_built_by_id`` (built during pass 2): skip.
           - If found via DB tag-search: cache it back into the map and
             skip (it already exists, no need to rebuild).
-          - Otherwise: fetch the canonical file via the Reader, find
-            the entity by deployment_id, and build it through
-            ``_build_one``.
+          - Otherwise: look the id up in ``entity_paths`` to find its
+            canonical file, fetch that file via the Reader, and build
+            the entity through ``_build_one``.
 
         The fetched entity goes through ``Loader._flatten_top_level``
         first so location synthesis applies to nested entities — a
@@ -325,27 +369,24 @@ class Builder:
             if not isinstance(incoming, list):
                 continue
             for ref in incoming:
-                if not isinstance(ref, dict):
-                    continue
-                if "deployment_file" not in ref or "deployment_id" not in ref:
-                    continue
-                key = (ref["deployment_file"], ref["deployment_id"])
-
-                if key in self._built_by_id:
+                if not isinstance(ref, str):
                     continue
 
-                obj = self._lookup_in_db(*key)
+                if ref in self._built_by_id:
+                    continue
+
+                obj = self._lookup_in_db(ref)
                 if obj is not None:
-                    self._built_by_id[key] = obj
+                    self._built_by_id[ref] = obj
                     continue
 
                 # Truly missing — fetch and build from canonical file.
-                target_entity = self._fetch_canonical_entity(*key)
+                target_entity = self._fetch_canonical_entity(ref)
                 if target_entity is None:
                     raise BuilderError(
-                        f"pass 3: incoming_exits ref "
-                        f"(deployment_file={key[0]!r}, deployment_id={key[1]!r}) "
-                        f"declared by {path!r} not found in canonical file"
+                        f"pass 3: incoming_exits reference to "
+                        f"entity_id={ref} declared by {path!r} not found "
+                        f"in its canonical file"
                     )
                 created.append(self._build_one(target_entity, create_object))
 
@@ -521,20 +562,29 @@ class Builder:
         # nested mutations don't auto-persist.)
         entity_obj.attributes.add(name, top)
 
-    def _fetch_canonical_entity(
-        self, deployment_file: str, deployment_id: int,
-    ) -> LoadedEntity | None:
-        """Fetch a canonical file via the Reader; find the entity by id.
+    def _fetch_canonical_entity(self, entity_id: str) -> LoadedEntity | None:
+        """Fetch an entity's canonical file via the Reader; find it by id.
 
-        Runs the file through ``Loader._flatten_top_level`` so location
-        synthesis applies to nested entities (the dependency target is
-        typically a nested exit whose location is the parent room).
-        Returns the LoadedEntity with matching deployment_id, or None
-        if the file doesn't contain such an id.
+        A reference names no file, so the path comes from the entity
+        index the Validator returned. Runs the file through
+        ``Loader._flatten_top_level`` so location synthesis applies to
+        nested entities (the dependency target is typically a nested
+        exit whose location is the parent room). Returns the
+        LoadedEntity with matching entity_id, or None if the file
+        doesn't declare it.
         """
+        canonical_path = self.entity_paths.get(entity_id)
+        if canonical_path is None:
+            raise BuilderError(
+                f"pass 3: entity_id={entity_id} is not in the entity index, "
+                f"so its canonical file is unknown. Either the reference is "
+                f"a typo, or the Builder was constructed without the index "
+                f"Validator.validate() returns."
+            )
+
         if self._reader is None:
             raise BuilderError(
-                f"pass 3: cannot fetch canonical file {deployment_file!r} — "
+                f"pass 3: cannot fetch canonical file {canonical_path!r} — "
                 f"Builder constructed without a reader"
             )
 
@@ -542,103 +592,100 @@ class Builder:
         from .loader import Loader
 
         try:
-            result = self._reader.read(deployment_file)
+            result = self._reader.read(canonical_path)
         except Exception as e:
             raise BuilderError(
-                f"pass 3: failed to read canonical file {deployment_file!r}: {e}"
+                f"pass 3: failed to read canonical file {canonical_path!r}: {e}"
             ) from e
 
         loader = Loader(self._reader, self.definitions)
         try:
             entities = loader._flatten_top_level(
-                parsed=result.parsed, path=deployment_file, location={},
+                parsed=result.parsed, path=canonical_path, location={},
             )
         except Exception as e:
             raise BuilderError(
-                f"pass 3: failed to flatten canonical file {deployment_file!r}: {e}"
+                f"pass 3: failed to flatten canonical file {canonical_path!r}: {e}"
             ) from e
 
         for entity in entities:
             content = entity.content if isinstance(entity.content, dict) else {}
-            if content.get("deployment_id") == deployment_id:
+            if content.get("entity_id") == entity_id:
                 return entity
         return None
 
     def _resolve_cross_ref(self, ref, entity_path: str, field_name: str):
-        """Turn a location/destination cross-ref value into a create_object arg.
+        """Turn a reference into a create_object argument.
 
-        Single helper for both content["location"] and
-        content["destination"] — the only difference between the two is
-        the value the caller passes; the lookup logic is identical. The
-        Validator's shape checks have already guaranteed the value is
-        null or a well-shaped cross-ref dict, so this method trusts shape.
+        Single helper for ``location:``, ``destination:``, ``home:`` and
+        a links entry's entity / points_to — the only difference between
+        them is the value the caller passes; the lookup is identical.
+        The Validator's shape checks have already guaranteed the value
+        is null or a well-formed entity_id, so this method trusts shape.
 
         None -> None (orphan placement).
-        Cross-ref dict -> a two-step lookup: try _built_by_id first (hit
-        when the target was built earlier in this build() call), then
-        fall through to _lookup_in_db for a target already in the
-        database from a previous build. A DB hit is cached back into
-        _built_by_id so subsequent refs to the same target in this pass
-        don't re-query. If both miss, raises BuilderError naming the
-        field and the (deployment_file, deployment_id) pair.
+        entity_id -> a two-step lookup: try _built_by_id first (hit when
+        the target was built earlier in this build() call), then fall
+        through to _lookup_in_db for a target already in the database
+        from a previous build. A DB hit is cached back into
+        _built_by_id so subsequent references to the same target in this
+        pass don't re-query. If both miss, raises BuilderError naming
+        the field and the id.
 
-        Cross-file refs to entities not built in this invocation resolve
-        via the DB fallback — this is what lets operators rebuild a
-        single file and have exits/locations pointing into other files
-        still resolve, as long as the target file has been built at some
-        point.
+        The reference names no file, which is exactly why nothing here
+        cares which file the target lives in: an entity that moved
+        between files still resolves through the same two lookups.
+        References to entities not built in this invocation resolve via
+        the DB fallback — this is what lets operators rebuild a single
+        file and have exits and locations pointing elsewhere still
+        resolve, as long as the target has been built at some point.
 
         Same-file forward refs (a top-level entity's location pointing at
         another top-level entity later in the same file) miss the lookup
         because the parent hasn't been built yet at this point in the
         iteration, and raise BuilderError — the author has to reorder.
-        Validator Tier 4 sees forward refs as valid (seen_ids is fully
+        Validator Tier 4 sees forward refs as valid (its index is fully
         built before Tier 4 runs); this refusal is the load-bearing
-        distinction between "ref is correct in the abstract" and "ref can
-        be used at this point in the build." This restriction does not
-        apply to destinations on exits — the two-pass build in build()
-        builds every non-exit before any exit, so destination cross-refs
-        always resolve as long as the target is in the build set,
-        regardless of YAML order.
+        distinction between "the reference is correct in the abstract"
+        and "the reference can be used at this point in the build." The
+        restriction does not apply to destinations on exits — the
+        two-pass build in build() builds every non-exit before any exit,
+        so destinations always resolve as long as the target is in the
+        build set, regardless of YAML order.
         """
         if ref is None:
             return None
 
-        key = (ref["deployment_file"], ref["deployment_id"])
-        if key in self._built_by_id:
-            return self._built_by_id[key]
+        if ref in self._built_by_id:
+            return self._built_by_id[ref]
 
-        # Fall through to DB tag-search for cross-file refs to entities
+        # Fall through to DB tag-search for references to entities
         # already in the DB from a previous build invocation. Cache hits
-        # back into _built_by_id so subsequent refs to the same target
-        # in this build pass don't re-query.
-        obj = self._lookup_in_db(*key)
+        # back into _built_by_id so subsequent references to the same
+        # target in this build pass don't re-query.
+        obj = self._lookup_in_db(ref)
         if obj is not None:
-            self._built_by_id[key] = obj
+            self._built_by_id[ref] = obj
             return obj
 
         raise BuilderError(
-            f"{entity_path!r}: '{field_name}' cross-ref to "
-            f"(deployment_file={key[0]!r}, deployment_id={key[1]!r}) "
+            f"{entity_path!r}: '{field_name}' reference to entity_id={ref} "
             f"does not resolve — neither built in this pass nor present in the DB. "
-            f"Likely causes: typo in the cross-ref, target file never built, "
+            f"Likely causes: typo in the reference, target never built, "
             f"or same-file forward ref (author the target earlier in the file)."
         )
 
-    def _lookup_in_db(self, deployment_file: str, deployment_id: int):
-        """Find an existing object tagged with this identity pair, if any.
+    def _lookup_in_db(self, entity_id: str):
+        """Find an existing object carrying this entity_id, if any.
 
         The DB-side counterpart to the in-build _built_by_id map — used
-        by _resolve_cross_ref to resolve cross-file refs to entities
-        already in the database from a previous build invocation.
+        by _resolve_cross_ref to resolve references to entities already
+        in the database from a previous build invocation.
 
-        Queries search_tag(key=deployment_file, category=
-        "wb_deployment_file") for every object from that file, then
-        filters client-side by the wb_deployment_id tag. Filtering a
-        single file-level query client-side is cheaper than two
-        search_tag calls plus an intersection — the number of objects per
-        file is typically small (the file's declared entity count), so
-        the in-Python filter is fast.
+        One indexed tag query. Under the previous composite identity
+        this had to fetch every object sharing a file tag and filter
+        client-side by the second tag; an entity_id is globally unique,
+        so the id alone is the query.
 
         Returns the matching object, None (no match), or raises
         BuilderError (more than one match — see below).
@@ -647,22 +694,15 @@ class Builder:
         from evennia.utils.search import search_tag
 
         try:
-            candidates = list(search_tag(
-                key=deployment_file, category=_TAG_CATEGORY_DEPLOYMENT_FILE,
+            matches = list(search_tag(
+                key=entity_id, category=_TAG_CATEGORY_ENTITY_ID,
             ))
         except Exception as e:
             raise BuilderError(
                 f"DB lookup: failed to query existing objects for "
-                f"deployment_file={deployment_file!r}: {e}"
+                f"entity_id={entity_id}: {e}"
             ) from e
 
-        target_id_str = str(deployment_id)
-        matches = [
-            obj for obj in candidates
-            if target_id_str in (obj.tags.get(
-                category=_TAG_CATEGORY_DEPLOYMENT_ID, return_list=True,
-            ) or [])
-        ]
         if not matches:
             return None
         if len(matches) > 1:
@@ -670,20 +710,26 @@ class Builder:
             # invariant. If it ever happens, fail loudly rather than
             # silently picking one — the operator needs to know.
             raise BuilderError(
-                f"DB has multiple objects tagged "
-                f"(deployment_file={deployment_file!r}, deployment_id={deployment_id}); "
+                f"DB has multiple objects tagged entity_id={entity_id}; "
                 f"this indicates a cleanup integrity failure"
             )
         return matches[0]
 
-    def _cleanup(self, file_paths) -> None:
-        """Delete every existing object tagged with any file in file_paths.
+    def _cleanup(self, file_ids: dict) -> None:
+        """Delete every existing object tagged with any file_id in scope.
 
-        Called once at the start of build(). For each path: search_tag
-        for existing objects from prior deployments of that file, then
-        delete each one (Evennia relocates any contents, including a
-        player standing in a deleted room, to the home location
-        automatically).
+        Called once at the start of build() with ``{file_id: path}``.
+        For each: search_tag for existing objects from prior deployments
+        of that file, then delete each one (Evennia relocates any
+        contents, including a player standing in a deleted room, to the
+        home location automatically).
+
+        Sweeping on ``file_id`` rather than the path is what makes a
+        rename safe. A file's objects carry the id it declared, so
+        renaming or relocating the YAML changes nothing about what a
+        rebuild sweeps — under a path-keyed sweep the old objects would
+        be orphaned with a tag no file would ever claim again, while the
+        new path built duplicates alongside them.
 
         One tag-search per file rather than one per entity: a file's full
         state replaces whatever was there, so sweeping by file means
@@ -701,15 +747,15 @@ class Builder:
         # Lazy import — Evennia must be bootstrapped before this fires.
         from evennia.utils.search import search_tag
 
-        for path in file_paths:
+        for file_id, path in file_ids.items():
             try:
                 existing = list(search_tag(
-                    key=path, category=_TAG_CATEGORY_DEPLOYMENT_FILE,
+                    key=file_id, category=_TAG_CATEGORY_FILE_ID,
                 ))
             except Exception as e:
                 raise BuilderError(
                     f"cleanup: failed to query existing objects for "
-                    f"deployment_file={path!r}: {e}"
+                    f"{path!r} (file_id={file_id}): {e}"
                 ) from e
 
             for obj in existing:
@@ -744,7 +790,7 @@ class Builder:
                     raise BuilderError(
                         f"cleanup: failed to delete existing "
                         f"{getattr(obj, 'dbref', '?')} "
-                        f"(deployment_file={path!r}): {e}"
+                        f"from {path!r}: {e}"
                     ) from e
                 self.deleted_count += 1
 
@@ -795,25 +841,31 @@ class Builder:
             )
 
     def _apply_tags(self, obj, entity: LoadedEntity) -> None:
-        """Add each content["tags"] entry, then the auto-set deployment pair.
+        """Add each content["tags"] entry, then the auto-set identity pair.
 
         Author tags first: each entry normalised to (key, category) via
-        _normalise_tag, then added via obj.tags.add(). Then the
-        deployment-identity pair is always appended last —
-        wb_deployment_file and wb_deployment_id. The wb_* category prefix
-        is reserved for library-controlled tags; the Validator's
+        _normalise_tag, then added via obj.tags.add(). Then the identity
+        pair is always appended last — wb_file_id (the file this object
+        came from, and therefore what a rebuild sweeps) and wb_entity_id
+        (what this object *is*, and what every reference resolves
+        against). The wb_* category prefix is reserved for
+        library-controlled tags; the Validator's
         _check_tags_no_reserved_category predicate rejects any author tag
         using a wb_* category, so the auto-set pair can't collide. Adding
         the auto-set pair last keeps it the final word about identity.
+
+        Neither value is derived from the path, so renaming or moving the
+        YAML leaves every object's identity intact.
         """
         content = entity.content if isinstance(entity.content, dict) else {}
         for tag in content.get("tags", []):
             key, category = _normalise_tag(tag)
             obj.tags.add(key, category=category)
 
-        deployment_id = content.get("deployment_id")
-        obj.tags.add(entity.path, category=_TAG_CATEGORY_DEPLOYMENT_FILE)
-        obj.tags.add(str(deployment_id), category=_TAG_CATEGORY_DEPLOYMENT_ID)
+        obj.tags.add(
+            self._file_id_for(entity.path), category=_TAG_CATEGORY_FILE_ID,
+        )
+        obj.tags.add(content["entity_id"], category=_TAG_CATEGORY_ENTITY_ID)
 
     def _invoke_post_build_hook(self, obj, entity: LoadedEntity) -> None:
         """Invoke ``obj.wb_at_post_build()`` if the typeclass defines it.
@@ -843,8 +895,8 @@ class Builder:
         except Exception as e:
             wb_log(
                 f"{type(obj).__name__}.{_WB_AT_POST_BUILD_ATTR}() raised "
-                f"on {entity.path!r} deployment_id="
-                f"{entity.content.get('deployment_id') if isinstance(entity.content, dict) else '?'}: {e}",
+                f"on {entity.path!r} entity_id="
+                f"{entity.content.get('entity_id') if isinstance(entity.content, dict) else '?'}: {e}",
                 level="ERROR",
             )
 
