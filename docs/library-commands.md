@@ -29,8 +29,8 @@ evennia-world-builder ships admin commands that auto-install into any consumer g
 
 Build world content from the configured manifest source. Drives the full pipeline: `Definitions → Finder → Loader → Validator → Builder`. On a clean validator pass the Builder runs and:
 
-- **cleans up** prior deployments of the source files in this build's scope (Evennia objects tagged `wb_deployment_file=<file>` are deleted before fresh ones are created — see [builder.md](builder.md) and [deployment-identity.md](deployment-identity.md));
-- **creates one Evennia object per entity** with all standard per-object dimensions applied: `typeclass`, `name`, `location`, `description`, `aliases`, `tags` (author tags plus the auto-set `wb_deployment_file` / `wb_deployment_id` pair), `locks`, `attributes` (YAML overriding any typeclass defaults).
+- **cleans up** prior deployments of the source files in this build's scope (Evennia objects tagged `wb_file_id=<the file's declared id>` are deleted before fresh ones are created — see [builder.md](builder.md) and [deployment-identity.md](deployment-identity.md));
+- **creates one Evennia object per entity** with all standard per-object dimensions applied: `typeclass`, `name`, `location`, `description`, `aliases`, `tags` (author tags plus the auto-set `wb_file_id` / `wb_entity_id` pair), `locks`, `attributes` (YAML overriding any typeclass defaults).
 
 On any validation finding the command surfaces every message via `caller.msg()` and refuses to call the Builder — same complete-refusal semantics as the standalone CLI.
 
@@ -60,7 +60,7 @@ The command takes no flags; any `--token` is refused rather than ignored, so a t
 - Query key not in declared levels, or skips a level → `DefinitionsError` (caught at validation, before any walk).
 - Query value not found in the manifest → `FinderQueryError` (caught during the walk).
 - Index missing in a folder, or pointing at a non-existent file → `LoaderError` subtype.
-- Validator findings (e.g. missing required field, malformed shape, unresolvable typeclass, duplicate `deployment_id`) → every message echoed, then `wb_build` refuses without invoking the Builder.
+- Validator findings (e.g. missing required field, malformed shape, unresolvable typeclass, duplicate `entity_id`) → every message echoed, then `wb_build` refuses without invoking the Builder.
 - Builder failure (typeclass instantiation error, tag/lock/attribute application exception, cleanup deletion failure) → wrapped in `BuilderError`, surfaced via `caller.msg`, no further entities processed.
 
 The command echoes each pipeline stage (pre-validation reason, validator findings, cleanup count, created objects) for visual verification. The output shape is a debugging aid; not part of any contract.

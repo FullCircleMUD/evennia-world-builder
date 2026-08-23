@@ -16,7 +16,7 @@ Consumer typeclasses regularly need such pointers (a door's partner, a teleporte
 
 2. **Granular, not symmetric.** Each link is a single directed assignment. Reciprocal pairs are two link entries. Some legitimate links are not reciprocal (a teleporter's target, an apprentice's master) — the primitive handles both shapes cleanly without a "pair" sugar.
 
-3. **Reuse the existing cross-ref resolver.** A link's `entity` and `points_to` are `(deployment_file, deployment_id)` refs, resolved through the Builder's existing `_resolve_cross_ref` (cache → DB). Same machinery as `location:` and `destination:`.
+3. **Reuse the existing resolver.** A link's `entity` and `points_to` are references — the target's `entity_id` — resolved through the Builder's existing `_resolve_cross_ref` (cache → DB). Same machinery as `location:` and `destination:`.
 
 4. **No partial state.** Unresolvable `entity` or `points_to` raises `BuilderError` before the next link is touched. Operator gets either a clean apply or a complete refusal.
 
@@ -28,30 +28,32 @@ Consumer typeclasses regularly need such pointers (a door's partner, a teleporte
 
 ```yaml
 entities:
-  - deployment_id: 1
+  - entity_id: 1d4e8b70-2a95-4c31-8f6a-0b7d9e254c18
     typeclass: typeclasses.terrain.exits.exit_door.ExitDoor
     # ... door A definition ...
-  - deployment_id: 2
+  - entity_id: bab596f3-aa25-4ec0-a916-cf472efece06
     typeclass: typeclasses.terrain.exits.exit_door.ExitDoor
     # ... door B definition ...
 
 links:
-  - entity:    { deployment_file: shard0/foo.yaml, deployment_id: 1 }
+  - entity:    1d4e8b70-2a95-4c31-8f6a-0b7d9e254c18   # door A
     attribute: other_side
-    points_to: { deployment_file: shard0/foo.yaml, deployment_id: 2 }
-  - entity:    { deployment_file: shard0/foo.yaml, deployment_id: 2 }
+    points_to: bab596f3-aa25-4ec0-a916-cf472efece06   # door B
+  - entity:    bab596f3-aa25-4ec0-a916-cf472efece06   # door B
     attribute: other_side
-    points_to: { deployment_file: shard0/foo.yaml, deployment_id: 1 }
+    points_to: 1d4e8b70-2a95-4c31-8f6a-0b7d9e254c18   # door A
 ```
 
 ### Fields
 
 | Field        | Type    | Required | Meaning |
 |---            |---       |---        |---       |
-| `entity`     | dict    | yes      | The entity whose attribute is being set. Always a `(deployment_file, deployment_id)` cross-ref dict, even for same-file refs. |
+| `entity`     | string  | yes      | The entity whose attribute is being set, named by its `entity_id`. |
 | `attribute`  | string  | yes      | The attribute key (or subscript path) on `entity` that receives `points_to`. See [Subscript-path attribute syntax](#subscript-path-attribute-syntax) for the path form. |
-| `points_to`  | dict    | yes      | The entity that becomes the attribute's value. Same `(deployment_file, deployment_id)` shape. |
+| `points_to`  | string  | yes      | The entity that becomes the attribute's value. Same shape. |
 | `category`   | string  | no       | Optional Evennia attribute category. Mirrors the existing `attributes:` block's optional `category` field. Defaults to `null` (uncategorised). Cannot be combined with subscript-path syntax — see below. |
+
+Because a reference is opaque, each entry carries a trailing comment naming what it points at. The comment is for the reader; the id is the truth.
 
 ### Semantics
 
@@ -88,7 +90,7 @@ The leading bare identifier in the path names a top-level attribute that **must 
 
 ```yaml
 entities:
-  - deployment_id: 1
+  - entity_id: 28d0aac8-0106-4c30-91ea-df74b98e1ac8
     typeclass: typeclasses.terrain.rooms.room_gateway.RoomGateway
     name: Eastern Crossroads
     location: null
@@ -105,12 +107,12 @@ entities:
             food_cost: 2
 
 links:
-  - entity:    { deployment_file: shard0/millholm/gateways/east_gate.yaml, deployment_id: 1 }
+  - entity:    28d0aac8-0106-4c30-91ea-df74b98e1ac8   # east gate
     attribute: 'destinations["ironback_peaks"]["destination"]'
-    points_to: { deployment_file: shard0/ironback-peaks/gateways/sw_gate.yaml, deployment_id: 1 }
-  - entity:    { deployment_file: shard0/millholm/gateways/east_gate.yaml, deployment_id: 1 }
+    points_to: 27030dd8-b228-471b-826a-dc33a86b1221   # ironback peaks: sw gate
+  - entity:    28d0aac8-0106-4c30-91ea-df74b98e1ac8   # east gate
     attribute: 'destinations["cloverfen"]["destination"]'
-    points_to: { deployment_file: shard0/cloverfen/gateways/nw_gate.yaml, deployment_id: 1 }
+    points_to: db662d8a-a8b1-4c84-93a1-516855a2f691   # cloverfen: nw gate
 ```
 
 After build, `east_gate.db.destinations["ironback_peaks"]["destination"]` is the live `sw_gate` Room object; sibling literal data (`label`, `food_cost`) is untouched.
@@ -139,11 +141,11 @@ Quoting note: subscript-path strings contain `[` which YAML interprets as flow-s
 
 - **Tier 1 (stateless, always run).** Each link entry has `entity`, `attribute`, `points_to` of correct types; `entity` and `points_to` are well-formed cross-ref dicts; `attribute` is a non-empty string (the same string check covers both the bare-name and subscript-path forms — path syntax is parsed at build time, not validated at validator time); `category` if present is a string. Findings list bad shape with the file path and the link's index in the list.
 
-- **Tier 2 (stateful per-file).** None — links don't introduce per-file accumulating state beyond what `seen_ids` already tracks.
+- **Tier 2 (stateful per-file).** None — links don't introduce accumulating state beyond the entity index.
 
 - **Tier 3 (Evennia-runtime).** None — link assignment doesn't need typeclass introspection. The library does **not** check that `attribute` is declared on the target typeclass. Per the design principle "library does not own game concepts," that's the consumer's responsibility (and would be picked up automatically by a future `strict-attributes:` implementation, since both regular `attributes:` and link assignments end up in the same write path).
 
-- **Tier 4 (cross-ref resolution).** When `resolve_cross_refs=True`, both `entity` and `points_to` must resolve against the full `seen_ids` index. Same finding format as exits: "{file}: link[{i}] {entity|points_to} cross-ref to (deployment_file=..., deployment_id=...) does not resolve."
+- **Tier 4 (reference resolution).** When `resolve_cross_refs=True`, both `entity` and `points_to` must resolve against the full entity index. Same finding format as exits: "{file}: 'links[{i}].{entity|points_to}' reference to entity_id=… does not resolve."
 
 ### What the validator does *not* check
 
@@ -207,7 +209,7 @@ This makes each file independently rebuildable: a partial rebuild of either side
 
 - **`inbound_links:` restoration registry.** Symmetric to `incoming_exits:` for cross-file links. Would eliminate the "declare in both files" convention. Deferred — see "Cross-file convention" above.
 
-- **Whole-repo cross-file conflict detection.** A whole-repo pre-validation pass could detect "file A and file B both write `(entity, attribute)` with different `points_to`." Today's validator only sees per-file scope plus the global `seen_ids` index; surfacing such conflicts cleanly would mean walking every file's `links:` during whole-repo validation. Deferred until conflicts are observed in real content.
+- **Whole-repo cross-file conflict detection.** A whole-repo pre-validation pass could detect "file A and file B both write `(entity, attribute)` with different `points_to`." Surfacing such conflicts cleanly would mean walking every file's `links:` and comparing writes across them. Deferred until conflicts are observed in real content.
 
 - **Strict-attribute checking.** The `strict-attributes:` setting (currently scaffolded but refuses `true`) would, when implemented, refuse YAML attributes whose key isn't declared on the target typeclass. Will cover both `attributes:` and `links:` automatically — same write path. No links-specific work needed when strict-attributes lands.
 
@@ -224,4 +226,4 @@ This makes each file independently rebuildable: a partial rebuild of either side
 
 - [builder.md](builder.md) — pass structure, `_resolve_cross_ref`, cleanup model.
 - [validator.md](validator.md) — predicate-tier architecture, scope of each tier.
-- [deployment-identity.md](deployment-identity.md) — `(deployment_file, deployment_id)` cross-ref scheme that links share with location/destination.
+- [deployment-identity.md](deployment-identity.md) — the reference scheme links share with location/destination.

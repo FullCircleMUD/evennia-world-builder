@@ -2,8 +2,6 @@
 
 The load-bearing identity scheme for everything evennia-world-builder creates in the consumer's database. Every downstream subsystem — Validator, Builder, cleanup, cross-references, partial deploys — operates in terms of this contract.
 
-> **Status: mid-migration on the `uuid-identity` branch.** The YAML surface below is agreed and the test-yaml fixtures follow it. The machinery (Loader, Validator, Builder, api) still implements the previous integer scheme; the sections marked `[TBD]` are open questions being worked through as the code conversion proceeds.
-
 ## Principle
 
 **Every Evennia object evennia-world-builder creates is identified by a single globally unique `entity_id`.** It is the handle the deployment system uses to find an object on rebuild, the handle authors use to point one entity at another, and the handle consumer game code resolves at runtime.
@@ -110,8 +108,6 @@ The library is type-agnostic about what's registered — the field is named for 
 
 This restores the operator's ability to rebuild any single file in isolation without hand-tracking which other files reference it. Cross-file rebuild dependencies dissolve.
 
-`[TBD — needs discussion: pass 3 locates the canonical file from the reference itself today. Under path-free references it depends on the resolution mechanism above.]`
-
 ## File-level `links:` block
 
 Each YAML file may declare a file-level `links:` list — directed assignments that set an attribute on one entity to a reference to another entity, after both have been built. The motivating case is bidirectional door pairs (each `ExitDoor` holding `other_side` pointing at its partner) but the primitive itself owns no game concepts: any consumer attribute whose value is another entity uses the same mechanism. See [links.md](links.md).
@@ -161,24 +157,18 @@ This handles all three edit shapes uniformly: entities added, entities removed, 
 
 Because the sweep keys on `file_id` rather than the path, renaming or relocating a file is invisible to cleanup: the rebuild deletes exactly the objects the file created last time.
 
-`[TBD — needs discussion: the Evennia tag category names carrying these two values.]`
+The two values reach the database as Evennia tags in reserved categories: `wb_file_id` and `wb_entity_id`. The `wb_` prefix is library-owned — the Validator refuses any author tag using it, so an auto-set value can't be shadowed.
 
 ## Validator's role
 
-The Validator (see [validator.md](validator.md)) enforces the contract. `[TBD — the predicates below still implement the previous scheme; this section is updated as each one is converted.]`
-
-Checks the new scheme requires:
+The Validator (see [validator.md](validator.md)) enforces the contract:
 
 - **Every entity declares a well-formed `entity_id`.**
 - **Every entity file declares a well-formed `file_id`.**
-- **No duplicate `entity_id`s.** Uniqueness is repo-wide, not per-file, so the check needs whole-repo scope — see the resolution question above.
-- **No duplicate `file_id`s.** Same scope problem. The failure this catches is a copied file: a duplicated `file_id` means rebuilding the copy sweeps the original's objects.
-- **Reference shape** for `location:`, `destination:`, `home:`, `incoming_exits:`, and `links:` entity/points_to — pending the reference-shape decision.
+- **No duplicate `entity_id`s.** Uniqueness is repo-wide, not per-file. Every build validates the whole repo, so the check always has the scope it needs.
+- **No duplicate `file_id`s.** The failure this catches is a copied file: a duplicated `file_id` means rebuilding the copy sweeps the original's objects.
+- **Reference shape** for `location:`, `destination:`, `home:`, `incoming_exits:`, and `links:` entity/points_to — one predicate, since all five carry the same shape.
 - **Reference resolution (Tier 4)** — every reference must name an entity that exists somewhere in the repo. Catches dangling refs at validate time, before any DB mutation.
-
-## Previous shape
-
-Objects were identified by a composite of `deployment_file` (the repo-root-relative path, set automatically by the Builder) and `deployment_id` (an author-supplied integer, unique within its file), with cross-references written as `{deployment_file, deployment_id}` dicts. The machinery still implements this; the test-yaml fixtures no longer declare it. This section goes when the conversion lands.
 
 ## Out of scope (deferred)
 

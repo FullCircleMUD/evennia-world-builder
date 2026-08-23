@@ -541,11 +541,11 @@ class FilterByQueryTest(TestCase):
     def _entities(self):
         return [
             LoadedEntity(location={"zone": "millholm", "room": "inn"},
-                         content={"deployment_id": 1}, path="millholm/inn.yaml"),
+                         content={"entity_id": _uid(1)}, path="millholm/inn.yaml"),
             LoadedEntity(location={"zone": "millholm", "room": "bakery"},
-                         content={"deployment_id": 1}, path="millholm/bakery.yaml"),
+                         content={"entity_id": _uid(1)}, path="millholm/bakery.yaml"),
             LoadedEntity(location={"zone": "aethenveil"},
-                         content={"deployment_id": 1}, path="aethenveil.yaml"),
+                         content={"entity_id": _uid(1)}, path="aethenveil.yaml"),
         ]
 
     def test_empty_query_returns_all(self):
@@ -704,9 +704,9 @@ class LoaderTest(TestCase):
         self.assertEqual(result.entities[0].content["home"], None)
 
     def test_loaded_entity_carries_home_field_cross_ref(self):
-        # `home: {deployment_file, entity_id}` likewise rides through
-        # entity.content untouched. Cross-ref resolution happens at
-        # Builder time via the same `_resolve_cross_ref` location uses.
+        # A `home:` reference likewise rides through entity.content
+        # untouched. Resolution happens at Builder time via the same
+        # `_resolve_cross_ref` that location uses.
         result = self._load_yaml_result({
             "entity_id": _uid(1),
             "typeclass": "evennia.objects.objects.DefaultObject",
@@ -1375,7 +1375,7 @@ class ValidatorTest(TestCase):
 
     # --- entity_id well-formed predicate --------------------------
 
-    def test_missing_deployment_id_raises_and_records(self):
+    def test_missing_entity_id_raises_and_records(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity("inn.yaml", {"name": "x"})])
@@ -1996,10 +1996,6 @@ class ValidatorDestinationWellFormedTest(TestCase):
         v.validate([self._entity({"destination": _uid(1)})])
         self.assertEqual(v.errors, [])
 
-    def test_destination_zero_deployment_id_accepted(self):
-        v = self._validator()
-        v.validate([self._entity({"destination": _uid(0)})])
-        self.assertEqual(v.errors, [])
 
     def test_destination_string_rejected(self):
         v = self._validator()
@@ -2263,7 +2259,7 @@ class ValidatorIncomingExitsFieldShapeTest(TestCase):
         # in the list is at fault — easier for authors to locate the typo.
         v = self._validator({"a.yaml": {"incoming_exits": [
             _uid(1),
-            {"deployment_file": "bad.yaml", "entity_id": "not-an-int"},
+            {"not": "a reference"},
         ]}})
         with self.assertRaises(ValidatorError):
             v.validate([self._entity()])
@@ -3246,20 +3242,20 @@ class ValidatorTagsReservedCategoryTest(TestCase):
         v.validate([self._entity([{"key": "x", "category": "environment"}])])
         self.assertEqual(v.errors, [])
 
-    def test_wb_deployment_file_category_rejected(self):
+    def test_wb_file_id_category_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity([
-                {"key": "millholm/x.yaml", "category": "wb_deployment_file"}
+                {"key": "millholm/x.yaml", "category": "wb_file_id"}
             ])])
         self.assertTrue(any("reserved for the library" in e for e in v.errors))
-        self.assertTrue(any("wb_deployment_file" in e for e in v.errors))
+        self.assertTrue(any("wb_file_id" in e for e in v.errors))
 
-    def test_wb_deployment_id_category_rejected(self):
+    def test_wb_entity_id_category_rejected(self):
         v = self._validator()
         with self.assertRaises(ValidatorError):
             v.validate([self._entity([
-                {"key": "1", "category": "wb_deployment_id"}
+                {"key": "1", "category": "wb_entity_id"}
             ])])
         self.assertTrue(any("reserved for the library" in e for e in v.errors))
 
@@ -3275,13 +3271,13 @@ class ValidatorTagsReservedCategoryTest(TestCase):
     def test_string_tags_unaffected(self):
         # Shorthand tags don't carry a category and can't trip this predicate.
         v = self._validator()
-        v.validate([self._entity(["wb_deployment_file"])])  # legal as a tag KEY
+        v.validate([self._entity(["wb_file_id"])])  # legal as a tag KEY
         self.assertEqual(v.errors, [])
 
     def test_default_category_unaffected(self):
         # Dict tag without a category falls back to default — can't be reserved.
         v = self._validator()
-        v.validate([self._entity([{"key": "wb_deployment_file"}])])
+        v.validate([self._entity([{"key": "wb_file_id"}])])
         self.assertEqual(v.errors, [])
 
 
@@ -3722,12 +3718,12 @@ class BuilderTest(TestCase):
     _NO_DESTINATION = object()  # sentinel — distinguish "omit field" from None
 
     def _entity(
-        self, *, path="x.yaml", deployment_id=1, location=None,
+        self, *, path="x.yaml", entity_id=_uid(1), location=None,
         destination=_NO_DESTINATION,
         is_nested=False, name="X", typeclass="ev.X",
     ) -> LoadedEntity:
         content = {
-            "deployment_id": deployment_id,
+            "entity_id": entity_id,
             "name": name,
             "typeclass": typeclass,
             "location": location,
@@ -3738,11 +3734,12 @@ class BuilderTest(TestCase):
             location={}, content=content, path=path, is_nested=is_nested,
         )
 
-    def _builder(self, *, file_metadata=None, reader=None):
+    def _builder(self, *, file_metadata=None, reader=None, entity_paths=None):
         return Builder(
             Definitions(levels=("zone",)),
-            file_metadata=file_metadata,
+            file_metadata=_merge_file_meta(file_metadata),
             reader=reader,
+            entity_paths=entity_paths,
         )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -3750,7 +3747,7 @@ class BuilderTest(TestCase):
     def test_orphan_passes_none_as_location(self, mock_create, _mock_search):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         b = self._builder()
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
         self.assertEqual(mock_create.call_args_list[0].kwargs["location"], None)
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -3767,10 +3764,10 @@ class BuilderTest(TestCase):
             return obj
         mock_create.side_effect = make
 
-        parent = self._entity(deployment_id=1, location=None, name="Parent")
+        parent = self._entity(entity_id=_uid(1), location=None, name="Parent")
         child = self._entity(
-            deployment_id=2, name="Child", is_nested=True,
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            entity_id=_uid(2), name="Child", is_nested=True,
+            location=_uid(1),
         )
 
         b = self._builder()
@@ -3787,14 +3784,14 @@ class BuilderTest(TestCase):
         # (search_tag mocked to []) — child's cross-ref must fail.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         orphan_child = self._entity(
-            deployment_id=2, is_nested=True,
-            location={"deployment_file": "x.yaml", "deployment_id": 99},
+            entity_id=_uid(2), is_nested=True,
+            location=_uid(99),
         )
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([orphan_child])
         self.assertIn("does not resolve", str(ctx.exception))
-        self.assertIn("deployment_id=99", str(ctx.exception))
+        self.assertIn(f"entity_id={_uid(99)}", str(ctx.exception))
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -3803,8 +3800,8 @@ class BuilderTest(TestCase):
         # ref — relevant once destination joins location in step 5b.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         orphan_child = self._entity(
-            deployment_id=2, is_nested=True,
-            location={"deployment_file": "x.yaml", "deployment_id": 99},
+            entity_id=_uid(2), is_nested=True,
+            location=_uid(99),
         )
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
@@ -3817,12 +3814,14 @@ class BuilderTest(TestCase):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         b = self._builder()
         b.build([
-            self._entity(path="a.yaml", deployment_id=1, location=None),
-            self._entity(path="a.yaml", deployment_id=2, location=None),
-            self._entity(path="b.yaml", deployment_id=1, location=None),
+            self._entity(path="a.yaml", entity_id=_uid(1), location=None),
+            self._entity(path="a.yaml", entity_id=_uid(2), location=None),
+            self._entity(path="b.yaml", entity_id=_uid(3), location=None),
         ])
+        # Keyed by entity_id alone — an id is globally unique, so the
+        # map is flat rather than nested per file.
         self.assertEqual(set(b._built_by_id.keys()), {
-            ("a.yaml", 1), ("a.yaml", 2), ("b.yaml", 1),
+            _uid(1), _uid(2), _uid(3),
         })
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -3830,11 +3829,11 @@ class BuilderTest(TestCase):
     def test_built_by_id_resets_between_builds(self, mock_create, _mock_search):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         b = self._builder()
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
         self.assertEqual(len(b._built_by_id), 1)
-        b.build([self._entity(deployment_id=2, location=None)])
+        b.build([self._entity(entity_id=_uid(2), location=None)])
         # Second build's map only has the second entity.
-        self.assertEqual(set(b._built_by_id.keys()), {("x.yaml", 2)})
+        self.assertEqual(set(b._built_by_id.keys()), {_uid(2)})
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -3849,14 +3848,14 @@ class BuilderTest(TestCase):
             return obj
         mock_create.side_effect = make
 
-        room = self._entity(deployment_id=1, location=None, name="Room")
+        room = self._entity(entity_id=_uid(1), location=None, name="Room")
         chest = self._entity(
-            deployment_id=2, is_nested=True, name="Chest",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
+            entity_id=_uid(2), is_nested=True, name="Chest",
+            location=_uid(1),
         )
         key = self._entity(
-            deployment_id=3, is_nested=True, name="Key",
-            location={"deployment_file": "x.yaml", "deployment_id": 2},
+            entity_id=_uid(3), is_nested=True, name="Key",
+            location=_uid(2),
         )
 
         b = self._builder()
@@ -3875,10 +3874,10 @@ class BuilderTest(TestCase):
         # order. Single-pass build refuses; author must reorder.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         a = self._entity(
-            deployment_id=1, name="A",
-            location={"deployment_file": "x.yaml", "deployment_id": 2},
+            entity_id=_uid(1), name="A",
+            location=_uid(2),
         )
-        b_entity = self._entity(deployment_id=2, name="B", location=None)
+        b_entity = self._entity(entity_id=_uid(2), name="B", location=None)
 
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
@@ -3894,7 +3893,7 @@ class BuilderTest(TestCase):
         # create_object WITHOUT a destination kwarg.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         b = self._builder()
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
         self.assertNotIn("destination", mock_create.call_args_list[0].kwargs)
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -3912,12 +3911,12 @@ class BuilderTest(TestCase):
         mock_create.side_effect = make
 
         bakery = self._entity(
-            deployment_id=1, name="Bakery", location=None,
+            entity_id=_uid(1), name="Bakery", location=None,
         )
         exit_entity = self._entity(
-            deployment_id=2, name="north",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
-            destination={"deployment_file": "x.yaml", "deployment_id": 1},
+            entity_id=_uid(2), name="north",
+            location=_uid(1),
+            destination=_uid(1),
         )
 
         b = self._builder()
@@ -3944,15 +3943,15 @@ class BuilderTest(TestCase):
             return obj
         mock_create.side_effect = make
 
-        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        bakery = self._entity(entity_id=_uid(1), name="Bakery", location=None)
         # Exit appears BEFORE the inn in the entity list, but the inn is
         # the destination — so without two-pass, this would fail.
         exit_to_inn = self._entity(
-            deployment_id=2, name="north",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
-            destination={"deployment_file": "x.yaml", "deployment_id": 3},
+            entity_id=_uid(2), name="north",
+            location=_uid(1),
+            destination=_uid(3),
         )
-        inn = self._entity(deployment_id=3, name="Inn", location=None)
+        inn = self._entity(entity_id=_uid(3), name="Inn", location=None)
 
         b = self._builder()
         b.build([bakery, exit_to_inn, inn])
@@ -3973,12 +3972,12 @@ class BuilderTest(TestCase):
             return obj
         mock_create.side_effect = make
 
-        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
-        inn = self._entity(deployment_id=2, name="Inn", location=None)
+        bakery = self._entity(entity_id=_uid(1), name="Bakery", location=None)
+        inn = self._entity(entity_id=_uid(2), name="Inn", location=None)
         exit_entity = self._entity(
-            deployment_id=3, name="north",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
-            destination={"deployment_file": "x.yaml", "deployment_id": 2},
+            entity_id=_uid(3), name="north",
+            location=_uid(1),
+            destination=_uid(2),
         )
 
         b = self._builder()
@@ -3998,73 +3997,67 @@ class BuilderTest(TestCase):
         # Exit with a destination cross-ref pointing at nothing in the
         # build set — error message identifies 'destination' specifically.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
-        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
+        bakery = self._entity(entity_id=_uid(1), name="Bakery", location=None)
         broken_exit = self._entity(
-            deployment_id=2, name="north",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
-            destination={"deployment_file": "x.yaml", "deployment_id": 99},
+            entity_id=_uid(2), name="north",
+            location=_uid(1),
+            destination=_uid(99),
         )
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([bakery, broken_exit])
         msg = str(ctx.exception)
         self.assertIn("'destination'", msg)
-        self.assertIn("deployment_id=99", msg)
+        self.assertIn(f"entity_id={_uid(99)}", msg)
 
     # --- DB tag-search fallback for cross-file refs (spike 4 step 5c) ---
 
-    def _mock_db_obj(self, *, deployment_id):
-        # Helper: a MagicMock shaped like a tagged Evennia object —
-        # `obj.tags.get(category="wb_deployment_id", return_list=True)`
-        # returns the right list of strings for filter matching.
+    def _mock_db_obj(self, *, entity_id):
+        # A MagicMock standing in for a tagged Evennia object. The tag
+        # query now selects on entity_id directly, so the mock carries
+        # no filtering behaviour — search_tag's return value IS the
+        # answer.
         obj = MagicMock()
-        obj.tags.get.return_value = [str(deployment_id)]
+        obj.tags.get.return_value = [str(entity_id)]
         return obj
 
     @patch("evennia.utils.search.search_tag")
     def test_lookup_in_db_returns_match(self, mock_search):
-        target = self._mock_db_obj(deployment_id=1)
+        target = self._mock_db_obj(entity_id=_uid(1))
         mock_search.return_value = [target]
         b = self._builder()
-        result = b._lookup_in_db("a.yaml", 1)
-        self.assertIs(result, target)
+        self.assertIs(b._lookup_in_db(_uid(1)), target)
+
+    @patch("evennia.utils.search.search_tag")
+    def test_lookup_in_db_queries_the_entity_id_tag(self, mock_search):
+        # One indexed query on the id itself. The previous composite
+        # identity had to fetch a whole file's objects and filter in
+        # Python; an entity_id is globally unique, so the id is the
+        # query.
+        mock_search.return_value = []
+        b = self._builder()
+        b._lookup_in_db(_uid(7))
+        self.assertEqual(
+            mock_search.call_args.kwargs,
+            {"key": _uid(7), "category": "wb_entity_id"},
+        )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
-    def test_lookup_in_db_returns_none_when_no_file_match(self, _mock_search):
+    def test_lookup_in_db_returns_none_when_no_match(self, _mock_search):
         b = self._builder()
-        self.assertIsNone(b._lookup_in_db("a.yaml", 1))
-
-    @patch("evennia.utils.search.search_tag")
-    def test_lookup_in_db_returns_none_when_no_id_match(self, mock_search):
-        # File has objects but none with deployment_id=99.
-        mock_search.return_value = [
-            self._mock_db_obj(deployment_id=1),
-            self._mock_db_obj(deployment_id=2),
-        ]
-        b = self._builder()
-        self.assertIsNone(b._lookup_in_db("a.yaml", 99))
-
-    @patch("evennia.utils.search.search_tag")
-    def test_lookup_in_db_filters_by_deployment_id(self, mock_search):
-        # Multiple objects from same file; filter picks the right one.
-        wrong = self._mock_db_obj(deployment_id=1)
-        right = self._mock_db_obj(deployment_id=42)
-        mock_search.return_value = [wrong, right]
-        b = self._builder()
-        result = b._lookup_in_db("a.yaml", 42)
-        self.assertIs(result, right)
+        self.assertIsNone(b._lookup_in_db(_uid(1)))
 
     @patch("evennia.utils.search.search_tag")
     def test_lookup_in_db_raises_on_multiple_matches(self, mock_search):
-        # Cleanup integrity invariant violated — two objects share the
-        # same (file, deployment_id) tag pair. Fail loudly.
+        # Cleanup integrity invariant violated — two objects carry the
+        # same entity_id. Fail loudly rather than picking one.
         mock_search.return_value = [
-            self._mock_db_obj(deployment_id=1),
-            self._mock_db_obj(deployment_id=1),
+            self._mock_db_obj(entity_id=_uid(1)),
+            self._mock_db_obj(entity_id=_uid(1)),
         ]
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
-            b._lookup_in_db("a.yaml", 1)
+            b._lookup_in_db(_uid(1))
         self.assertIn("multiple objects", str(ctx.exception))
         self.assertIn("cleanup integrity", str(ctx.exception))
 
@@ -4078,15 +4071,15 @@ class BuilderTest(TestCase):
         # second call — first call is the cleanup query). _resolve_cross_ref
         # falls through, finds it, passes it as `location=` to create_object.
         cleanup_response = []                       # cleanup: nothing to delete
-        db_obj = self._mock_db_obj(deployment_id=1)
+        db_obj = self._mock_db_obj(entity_id=_uid(1))
         # search_tag is called: (1) once per file in cleanup, (2) once per
         # cross-ref lookup. Distinguish via side_effect list.
         mock_search.side_effect = [cleanup_response, [db_obj]]
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         child = self._entity(
-            deployment_id=2, is_nested=True,
-            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+            entity_id=_uid(2), is_nested=True,
+            location=_uid(1),
         )
         b = self._builder()
         b.build([child])
@@ -4103,17 +4096,17 @@ class BuilderTest(TestCase):
         # should be queried ONCE — the first lookup caches the object
         # into _built_by_id; the second hits the in-memory map.
         cleanup_response = []
-        db_obj = self._mock_db_obj(deployment_id=1)
+        db_obj = self._mock_db_obj(entity_id=_uid(1))
         mock_search.side_effect = [cleanup_response, [db_obj]]
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         c1 = self._entity(
-            deployment_id=10, is_nested=True, name="c1",
-            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+            entity_id=_uid(10), is_nested=True, name="c1",
+            location=_uid(1),
         )
         c2 = self._entity(
-            deployment_id=11, is_nested=True, name="c2",
-            location={"deployment_file": "elsewhere.yaml", "deployment_id": 1},
+            entity_id=_uid(11), is_nested=True, name="c2",
+            location=_uid(1),
         )
 
         b = self._builder()
@@ -4133,16 +4126,19 @@ class BuilderTest(TestCase):
         # failure modes.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         orphan = self._entity(
-            deployment_id=2, is_nested=True,
-            location={"deployment_file": "ghost.yaml", "deployment_id": 99},
+            entity_id=_uid(2), is_nested=True,
+            location=_uid(99),
         )
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([orphan])
         msg = str(ctx.exception)
         self.assertIn("neither built in this pass nor present in the DB", msg)
-        self.assertIn("ghost.yaml", msg)
-        self.assertIn("deployment_id=99", msg)
+        # The finding names the source file and the unresolved id. It
+        # can't name the target's file: a reference doesn't carry one,
+        # and if the id resolved to nothing there is no file to name.
+        self.assertIn("x.yaml", msg)
+        self.assertIn(f"entity_id={_uid(99)}", msg)
 
     @patch("evennia.utils.create.create_object")
     @patch("evennia.utils.search.search_tag")
@@ -4165,7 +4161,7 @@ class BuilderTest(TestCase):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         b = self._builder()
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
 
         # Live object got deleted; ghost was skipped without exception.
         live.delete.assert_called_once()
@@ -4211,7 +4207,7 @@ class BuilderTest(TestCase):
         b = self._builder()
         # Should not raise — the cascade-ghost's ObjectDoesNotExist is
         # caught and the loop continues to delete the remaining live.
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
 
         live_room.delete.assert_called_once()
         cascade_ghost.delete.assert_called_once()
@@ -4237,17 +4233,17 @@ class BuilderTest(TestCase):
             return obj
         mock_create.side_effect = make
 
-        bakery = self._entity(deployment_id=1, name="Bakery", location=None)
-        inn = self._entity(deployment_id=2, name="Inn", location=None)
+        bakery = self._entity(entity_id=_uid(1), name="Bakery", location=None)
+        inn = self._entity(entity_id=_uid(2), name="Inn", location=None)
         north = self._entity(
-            deployment_id=3, name="north",
-            location={"deployment_file": "x.yaml", "deployment_id": 1},
-            destination={"deployment_file": "x.yaml", "deployment_id": 2},
+            entity_id=_uid(3), name="north",
+            location=_uid(1),
+            destination=_uid(2),
         )
         south = self._entity(
-            deployment_id=4, name="south",
-            location={"deployment_file": "x.yaml", "deployment_id": 2},
-            destination={"deployment_file": "x.yaml", "deployment_id": 1},
+            entity_id=_uid(4), name="south",
+            location=_uid(2),
+            destination=_uid(1),
         )
 
         b = self._builder()
@@ -4273,7 +4269,7 @@ class BuilderTest(TestCase):
     def test_pass_3_no_op_when_file_metadata_empty(self, mock_create, _mock_search):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         b = self._builder()
-        b.build([self._entity(deployment_id=1, location=None)])
+        b.build([self._entity(entity_id=_uid(1), location=None)])
         # Only the one entity built; no pass 3 work.
         self.assertEqual(mock_create.call_count, 1)
 
@@ -4288,18 +4284,18 @@ class BuilderTest(TestCase):
         # no extra create_object call.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         bakery = self._entity(
-            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
         )
         inn = self._entity(
-            path="inn.yaml", deployment_id=1, name="Inn", location=None,
+            path="inn.yaml", entity_id=_uid(1), name="Inn", location=None,
         )
         south_exit = self._entity(
-            path="inn.yaml", deployment_id=2, name="south",
-            location={"deployment_file": "inn.yaml", "deployment_id": 1},
-            destination={"deployment_file": "bakery.yaml", "deployment_id": 1},
+            path="inn.yaml", entity_id=_uid(2), name="south",
+            location=_uid(1),
+            destination=_uid(1),
         )
         b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "inn.yaml", "deployment_id": 2},
+            _uid(2),
         ]}})
         b.build([bakery, inn, south_exit])
         # 3 creates: bakery, inn, south_exit. Pass 3 finds south_exit
@@ -4313,22 +4309,24 @@ class BuilderTest(TestCase):
         # south exit is in the DB (search_tag returns it). Pass 3 finds
         # it via DB fallback and skips fetching the canonical file.
         cleanup_response = []
-        db_obj = self._mock_db_obj(deployment_id=2)
+        db_obj = self._mock_db_obj(entity_id=_uid(2))
         mock_search.side_effect = [cleanup_response, [db_obj]]
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         bakery = self._entity(
-            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
         )
         # No reader needed — DB lookup hits before the fetch path.
         b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "inn.yaml", "deployment_id": 2},
+            _uid(2),
         ]}})
         b.build([bakery])
         # Only 1 create (the bakery). Pass 3 found the south exit in DB.
         self.assertEqual(mock_create.call_count, 1)
-        # And the DB-found object is now cached in the in-build map.
-        self.assertIn(("inn.yaml", 2), b._built_by_id)
+        # And the DB-found object is now cached in the in-build map,
+        # keyed by the id itself — pass 3 never needed to know which
+        # file the exit lives in.
+        self.assertIn(_uid(2), b._built_by_id)
 
     @patch("evennia.utils.create.create_object")
     @patch("evennia.utils.search.search_tag")
@@ -4339,20 +4337,19 @@ class BuilderTest(TestCase):
         # deleted (DB lookup for it misses) but the inn itself is
         # still in the DB (Evennia's SET_NULL on db_destination doesn't
         # cascade-delete the location-side relations). Pass 3 must:
-        # 1. Look up (inn.yaml, 2) → not in DB (cascade-deleted).
-        # 2. Fetch inn.yaml from the Reader.
-        # 3. Build the south exit. Its location (inn.yaml, 1) resolves
-        #    via DB fallback (inn still exists). Its destination
-        #    (bakery.yaml, 1) resolves via _built_by_id (just built).
-        inn_db_mock = self._mock_db_obj(deployment_id=1)
+        # 1. Look up the south exit → not in DB (cascade-deleted).
+        # 2. Resolve its entity_id to inn.yaml via the entity index,
+        #    and fetch that file from the Reader.
+        # 3. Build the south exit. Its location (the inn) resolves via
+        #    DB fallback (the inn still exists). Its destination (the
+        #    bakery) resolves via _built_by_id (just built).
+        inn_db_mock = self._mock_db_obj(entity_id=_uid(11))
 
         def fake_search_tag(key, category):
-            # Cleanup queries bakery.yaml (no prior state in this stub).
-            # Pass 3 queries inn.yaml when resolving the south exit's
-            # location (and when checking if the south exit itself is
-            # in the DB). Filter logic in _lookup_in_db decides which
-            # candidate matches the requested deployment_id.
-            if key == "inn.yaml":
+            # Every query is now on an entity_id: cleanup asks by
+            # file_id (no prior state in this stub), pass 3 asks for the
+            # south exit (missing) and then for the inn (present).
+            if key == _uid(11):
                 return [inn_db_mock]
             return []
         mock_search.side_effect = fake_search_tag
@@ -4360,17 +4357,15 @@ class BuilderTest(TestCase):
 
         # Canonical inn.yaml contains a top-level inn and its south exit.
         inn_yaml = {"entities": [{
-            "deployment_id": 1,
+            "entity_id": _uid(11),
             "typeclass": "evennia.objects.objects.DefaultRoom",
             "name": "The Crooked Lantern",
             "location": None,
             "exits": [{
-                "deployment_id": 2,
+                "entity_id": _uid(2),
                 "typeclass": "evennia.objects.objects.DefaultExit",
                 "name": "south",
-                "destination": {
-                    "deployment_file": "bakery.yaml", "deployment_id": 1,
-                },
+                "destination": _uid(1),
             }],
         }]}
         reader = self._make_pass3_reader({
@@ -4379,13 +4374,14 @@ class BuilderTest(TestCase):
         })
 
         bakery = self._entity(
-            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
         )
         b = self._builder(
             reader=reader,
             file_metadata={"bakery.yaml": {"incoming_exits": [
-                {"deployment_file": "inn.yaml", "deployment_id": 2},
+                _uid(2),
             ]}},
+            entity_paths={_uid(2): "inn.yaml", _uid(11): "inn.yaml"},
         )
         b.build([bakery])
 
@@ -4410,11 +4406,12 @@ class BuilderTest(TestCase):
         # canonical file but can't — must raise BuilderError.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         bakery = self._entity(
-            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
         )
-        b = self._builder(file_metadata={"bakery.yaml": {"incoming_exits": [
-            {"deployment_file": "inn.yaml", "deployment_id": 2},
-        ]}})  # NO reader supplied
+        b = self._builder(
+            file_metadata={"bakery.yaml": {"incoming_exits": [_uid(2)]}},
+            entity_paths={_uid(2): "inn.yaml"},
+        )  # NO reader supplied
         with self.assertRaises(BuilderError) as ctx:
             b.build([bakery])
         self.assertIn(
@@ -4426,29 +4423,159 @@ class BuilderTest(TestCase):
     def test_pass_3_raises_when_canonical_file_lacks_id(
         self, mock_create, _mock_search,
     ):
-        # Author registered (inn.yaml, 99) but inn.yaml has no
-        # deployment_id=99. Pass 3 must refuse with a clear error.
+        # The index says entity 99 lives in inn.yaml, but the file
+        # doesn't declare it. Pass 3 must refuse with a clear error.
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
         reader = self._make_pass3_reader({
             "definitions.yaml": {"levels": ["zone"]},
             "inn.yaml": {"entities": [{
-                "deployment_id": 1,
+                "entity_id": _uid(11),
                 "typeclass": "evennia.objects.objects.DefaultRoom",
                 "name": "Inn", "location": None,
             }]},
         })
         bakery = self._entity(
-            path="bakery.yaml", deployment_id=1, name="Bakery", location=None,
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
         )
         b = self._builder(
             reader=reader,
             file_metadata={"bakery.yaml": {"incoming_exits": [
-                {"deployment_file": "inn.yaml", "deployment_id": 99},
+                _uid(99),
             ]}},
+            entity_paths={_uid(99): "inn.yaml"},
         )
         with self.assertRaises(BuilderError) as ctx:
             b.build([bakery])
-        self.assertIn("not found in canonical file", str(ctx.exception))
+        self.assertIn("not found in its canonical file", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_pass_3_raises_when_id_not_in_entity_index(
+        self, mock_create, _mock_search,
+    ):
+        # A reference names no file, so with no index entry there is
+        # nothing to fetch. Refuse rather than silently skipping the
+        # restore, which would leave the dependent exit missing.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        bakery = self._entity(
+            path="bakery.yaml", entity_id=_uid(1), name="Bakery", location=None,
+        )
+        b = self._builder(
+            reader=self._make_pass3_reader({
+                "definitions.yaml": {"levels": ["zone"]},
+            }),
+            file_metadata={"bakery.yaml": {"incoming_exits": [_uid(99)]}},
+        )
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([bakery])
+        self.assertIn("not in the entity index", str(ctx.exception))
+
+
+class BuilderIdentityTagsTest(TestCase):
+    """Verify what the Builder writes for identity, and what cleanup sweeps.
+
+    These are the two places the scheme actually reaches the database:
+    every object carries its file's ``file_id`` and its own
+    ``entity_id``, and a rebuild sweeps on the former. Neither value is
+    derived from the path, which is what makes a rename safe.
+    """
+
+    _FILE_ID = _uid(0xF00D)
+
+    def _entity(self, *, path="x.yaml", entity_id=None) -> LoadedEntity:
+        return LoadedEntity(location={}, path=path, content={
+            "entity_id": entity_id or _uid(1),
+            "name": "X",
+            "typeclass": "ev.X",
+            "location": None,
+        })
+
+    def _builder(self, *, path="x.yaml"):
+        return Builder(
+            Definitions(levels=("zone",)),
+            file_metadata={path: {"file_id": self._FILE_ID}},
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_identity_pair_tagged_onto_created_object(
+        self, mock_create, _mock_search,
+    ):
+        obj = MagicMock()
+        mock_create.return_value = obj
+        self._builder().build([self._entity(entity_id=_uid(5))])
+
+        calls = {
+            (c.args[0], c.kwargs.get("category"))
+            for c in obj.tags.add.call_args_list
+        }
+        self.assertIn((self._FILE_ID, "wb_file_id"), calls)
+        self.assertIn((_uid(5), "wb_entity_id"), calls)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_path_is_not_tagged(self, mock_create, _mock_search):
+        # The path is a locator, not identity. Tagging it would put the
+        # rename problem straight back.
+        obj = MagicMock()
+        mock_create.return_value = obj
+        self._builder().build([self._entity(path="x.yaml")])
+        tagged = {c.args[0] for c in obj.tags.add.call_args_list}
+        self.assertNotIn("x.yaml", tagged)
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_cleanup_sweeps_on_file_id(self, mock_create, mock_search):
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        self._builder().build([self._entity()])
+        self.assertEqual(
+            mock_search.call_args_list[0].kwargs,
+            {"key": self._FILE_ID, "category": "wb_file_id"},
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_rename_still_sweeps_the_same_objects(
+        self, mock_create, mock_search,
+    ):
+        # The payoff. Same file_id, new path: cleanup queries exactly
+        # what it queried before, so the rebuild deletes the objects the
+        # file created last time. Sweeping on the path would instead
+        # orphan them under a tag no file would ever claim again, while
+        # the new path built duplicates alongside.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        self._builder(path="renamed.yaml").build(
+            [self._entity(path="renamed.yaml")],
+        )
+        self.assertEqual(
+            mock_search.call_args_list[0].kwargs,
+            {"key": self._FILE_ID, "category": "wb_file_id"},
+        )
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_missing_file_id_refuses(self, mock_create, _mock_search):
+        # The Validator guarantees one, so a miss means the Builder was
+        # handed metadata the Validator never saw. Refuse rather than
+        # skip: a file with no file_id can't be swept, and silently not
+        # sweeping is how a rebuild leaves the last deployment behind.
+        mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
+        b = Builder(Definitions(levels=("zone",)), file_metadata={})
+        with self.assertRaises(BuilderError) as ctx:
+            b.build([self._entity()])
+        self.assertIn("no 'file_id' in file metadata", str(ctx.exception))
+
+    @patch("evennia.utils.search.search_tag", return_value=[])
+    @patch("evennia.utils.create.create_object")
+    def test_refusal_happens_before_any_object_is_created(
+        self, mock_create, _mock_search,
+    ):
+        # No partial state: the refusal is in the cleanup scope
+        # calculation, which runs before the first create_object.
+        b = Builder(Definitions(levels=("zone",)), file_metadata={})
+        with self.assertRaises(BuilderError):
+            b.build([self._entity()])
+        mock_create.assert_not_called()
 
 
 class BuilderHomeFieldTest(TestCase):
@@ -4467,11 +4594,11 @@ class BuilderHomeFieldTest(TestCase):
     _NO_HOME = object()
 
     def _entity(
-        self, *, path="x.yaml", deployment_id=1, location=None,
+        self, *, path="x.yaml", entity_id=_uid(1), location=None,
         home=_NO_HOME, name="X", typeclass="ev.X",
     ) -> LoadedEntity:
         content = {
-            "deployment_id": deployment_id,
+            "entity_id": entity_id,
             "name": name,
             "typeclass": typeclass,
             "location": location,
@@ -4481,7 +4608,9 @@ class BuilderHomeFieldTest(TestCase):
         return LoadedEntity(location={}, content=content, path=path)
 
     def _builder(self):
-        return Builder(Definitions(levels=("zone",)))
+        return Builder(
+            Definitions(levels=("zone",)), file_metadata=_file_meta(),
+        )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -4521,10 +4650,10 @@ class BuilderHomeFieldTest(TestCase):
 
         b = self._builder()
         b.build([
-            self._entity(deployment_id=1, name="Target"),
+            self._entity(entity_id=_uid(1), name="Target"),
             self._entity(
-                deployment_id=2, name="Resident",
-                home={"deployment_file": "x.yaml", "deployment_id": 1},
+                entity_id=_uid(2), name="Resident",
+                home=_uid(1),
             ),
         ])
 
@@ -4541,7 +4670,7 @@ class BuilderHomeFieldTest(TestCase):
         b = self._builder()
         with self.assertRaises(BuilderError) as ctx:
             b.build([self._entity(
-                home={"deployment_file": "ghost.yaml", "deployment_id": 99},
+                home=_uid(99),
             )])
         self.assertIn("'home'", str(ctx.exception))
         self.assertIn("does not resolve", str(ctx.exception))
@@ -4559,10 +4688,10 @@ class BuilderHomeFieldTest(TestCase):
         with self.assertRaises(BuilderError) as ctx:
             b.build([
                 self._entity(
-                    deployment_id=1, name="Resident",
-                    home={"deployment_file": "x.yaml", "deployment_id": 2},
+                    entity_id=_uid(1), name="Resident",
+                    home=_uid(2),
                 ),
-                self._entity(deployment_id=2, name="Target"),
+                self._entity(entity_id=_uid(2), name="Target"),
             ])
         self.assertIn("'home'", str(ctx.exception))
 
@@ -4579,23 +4708,24 @@ class BuilderPass4LinksTest(TestCase):
     See docs/links.md.
     """
 
-    def _entity(self, *, path="x.yaml", deployment_id, name=None) -> LoadedEntity:
+    def _entity(self, *, path="x.yaml", entity_id, name=None) -> LoadedEntity:
         return LoadedEntity(
             location={},
             content={
-                "deployment_id": deployment_id,
-                "name": name or f"E{deployment_id}",
+                "entity_id": entity_id,
+                "name": name or f"E{entity_id}",
                 "typeclass": "ev.X",
                 "location": None,
             },
             path=path,
         )
 
-    def _builder(self, *, file_metadata=None, reader=None):
+    def _builder(self, *, file_metadata=None, reader=None, entity_paths=None):
         return Builder(
             Definitions(levels=("zone",)),
-            file_metadata=file_metadata,
+            file_metadata=_merge_file_meta(file_metadata),
             reader=reader,
+            entity_paths=entity_paths,
         )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -4611,7 +4741,7 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {}})
-        b.build([self._entity(deployment_id=1)])
+        b.build([self._entity(entity_id=_uid(1))])
 
         # Built entity's attributes.add was never called by pass 4.
         created[0].attributes.add.assert_not_called()
@@ -4634,19 +4764,19 @@ class BuilderPass4LinksTest(TestCase):
 
         b = self._builder(file_metadata={"x.yaml": {"links": [
             {
-                "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "entity": _uid(1),
                 "attribute": "other_side",
-                "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+                "points_to": _uid(2),
             },
             {
-                "entity": {"deployment_file": "x.yaml", "deployment_id": 2},
+                "entity": _uid(2),
                 "attribute": "other_side",
-                "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "points_to": _uid(1),
             },
         ]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         a, c = created[0], created[1]
@@ -4665,14 +4795,14 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
             "category": "doors",
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         created[0].attributes.add.assert_called_once_with(
@@ -4692,14 +4822,14 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
-            "attribute": "self_ref",
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
+            "attribute": "self_re",
+            "points_to": _uid(1),
         }]}})
-        b.build([self._entity(deployment_id=1)])
+        b.build([self._entity(entity_id=_uid(1))])
 
         created[0].attributes.add.assert_called_once_with(
-            "self_ref", created[0], category=None,
+            "self_re", created[0], category=None,
         )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -4710,12 +4840,12 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            "entity": _uid(99),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "points_to": _uid(1),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
-            b.build([self._entity(deployment_id=1)])
+            b.build([self._entity(entity_id=_uid(1))])
         self.assertIn("links[0].entity", str(ctx.exception))
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -4724,12 +4854,12 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = lambda **kw: MagicMock(_kw=kw)
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "ghost.yaml", "deployment_id": 99},
+            "points_to": _uid(99),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
-            b.build([self._entity(deployment_id=1)])
+            b.build([self._entity(entity_id=_uid(1))])
         self.assertIn("links[0].points_to", str(ctx.exception))
 
     @patch("evennia.utils.search.search_tag", return_value=[])
@@ -4750,14 +4880,14 @@ class BuilderPass4LinksTest(TestCase):
 
         b = self._builder(file_metadata={
             "y.yaml": {"links": [{
-                "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "entity": _uid(1),
                 "attribute": "other_side",
-                "points_to": {"deployment_file": "x.yaml", "deployment_id": 1},
+                "points_to": _uid(1),
             }]},
         })
         # Build only x.yaml's entity. file_metadata for y.yaml exists,
         # but y.yaml is not in file_paths_in_scope.
-        b.build([self._entity(path="x.yaml", deployment_id=1)])
+        b.build([self._entity(path="x.yaml", entity_id=_uid(1))])
 
         created[0].attributes.add.assert_not_called()
 
@@ -4782,13 +4912,13 @@ class BuilderPass4LinksTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         created[0].attributes.add.assert_called_once_with(
@@ -4809,29 +4939,30 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
     cross-ref at the leaf.
     """
 
-    def _entity(self, *, path="x.yaml", deployment_id, name=None) -> LoadedEntity:
+    def _entity(self, *, path="x.yaml", entity_id, name=None) -> LoadedEntity:
         return LoadedEntity(
             location={},
             content={
-                "deployment_id": deployment_id,
-                "name": name or f"E{deployment_id}",
+                "entity_id": entity_id,
+                "name": name or f"E{entity_id}",
                 "typeclass": "ev.X",
                 "location": None,
             },
             path=path,
         )
 
-    def _builder(self, *, file_metadata=None, reader=None):
+    def _builder(self, *, file_metadata=None, reader=None, entity_paths=None):
         return Builder(
             Definitions(levels=("zone",)),
-            file_metadata=file_metadata,
+            file_metadata=_merge_file_meta(file_metadata),
             reader=reader,
+            entity_paths=entity_paths,
         )
 
     def _make_create_with_attribute_store(self, attribute_stores):
         """Build a create_object side-effect that wires .attributes.get to
         return the per-entity dict from attribute_stores (keyed by
-        deployment_id), and .attributes.add to update that dict.
+        entity_id), and .attributes.add to update that dict.
 
         attribute_stores: list of dicts, one per to-be-created entity,
         in creation order. Each dict represents the entity's persistent
@@ -4882,13 +5013,13 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["ironback_peaks"]["destination"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         # Placeholder was replaced with entity 2's mock object.
@@ -4916,13 +5047,13 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": "other_side",
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         # Bare attribute set via single attributes.add call.
@@ -4941,15 +5072,15 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'foo["bar"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
             "category": "doors",
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("category", str(ctx.exception))
 
@@ -4965,14 +5096,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["foo"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("does not exist", str(ctx.exception))
 
@@ -4988,14 +5119,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["foo"]["bar"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("cannot navigate", str(ctx.exception))
 
@@ -5009,14 +5140,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["unclosed',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("not valid Python", str(ctx.exception))
 
@@ -5034,14 +5165,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'dict(thing]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("not valid Python", str(ctx.exception))
 
@@ -5062,13 +5193,13 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'routes[0]["to"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         self.assertIs(store_1["routes"][0]["to"], created[1])
@@ -5090,14 +5221,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["foo"]["bar"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("cannot assign at", str(ctx.exception))
 
@@ -5115,14 +5246,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["foo"]["bar"]["baz"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("cannot navigate", str(ctx.exception))
 
@@ -5138,14 +5269,14 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'routes[5]["to"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         with self.assertRaises(BuilderError) as ctx:
             b.build([
-                self._entity(deployment_id=1),
-                self._entity(deployment_id=2),
+                self._entity(entity_id=_uid(1)),
+                self._entity(entity_id=_uid(2)),
             ])
         self.assertIn("cannot navigate", str(ctx.exception))
 
@@ -5167,13 +5298,13 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'destinations["foo"]["to"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         self.assertIs(store_1["destinations"]["foo"]["to"], created[1])
@@ -5190,20 +5321,20 @@ class BuilderPass4LinksSubscriptPathTest(TestCase):
         mock_create.side_effect = make
 
         b = self._builder(file_metadata={"x.yaml": {"links": [{
-            "entity": {"deployment_file": "x.yaml", "deployment_id": 1},
+            "entity": _uid(1),
             "attribute": 'a["b"]["c"]["d"]["e"]["f"]',
-            "points_to": {"deployment_file": "x.yaml", "deployment_id": 2},
+            "points_to": _uid(2),
         }]}})
         b.build([
-            self._entity(deployment_id=1),
-            self._entity(deployment_id=2),
+            self._entity(entity_id=_uid(1)),
+            self._entity(entity_id=_uid(2)),
         ])
 
         self.assertIs(store_1["a"]["b"]["c"]["d"]["e"]["f"], created[1])
 
 
 class LookupDbrefTest(TestCase):
-    """Verify api.wb_lookup_dbref translates the identity pair to a dbref string.
+    """Verify api.wb_lookup_dbref translates an entity_id to a dbref string.
 
     Mocks the internal _query_object_ids helper so the test exercises
     wb_lookup_dbref's branching (no match / one match / many matches) and
@@ -5214,32 +5345,35 @@ class LookupDbrefTest(TestCase):
     @patch("evennia_world_builder.api._query_object_ids")
     def test_no_match_returns_none(self, mock_query):
         mock_query.return_value = []
-        self.assertIsNone(wb_lookup_dbref("millholm/forest.yaml", 1))
+        self.assertIsNone(wb_lookup_dbref(_uid(1)))
 
     @patch("evennia_world_builder.api._query_object_ids")
     def test_single_match_returns_hash_dbref(self, mock_query):
         mock_query.return_value = [42]
-        self.assertEqual(wb_lookup_dbref("millholm/forest.yaml", 1), "#42")
+        self.assertEqual(wb_lookup_dbref(_uid(1)), "#42")
 
     @patch("evennia_world_builder.api._query_object_ids")
     def test_multi_match_raises_api_error(self, mock_query):
+        # An entity_id is globally unique and the Validator refuses a
+        # repo that declares one twice, so two matches means cleanup
+        # integrity has broken.
         mock_query.return_value = [42, 43]
         with self.assertRaises(ApiError) as ctx:
-            wb_lookup_dbref("millholm/forest.yaml", 1)
+            wb_lookup_dbref(_uid(1))
         msg = str(ctx.exception)
         self.assertIn("multiple objects match", msg)
-        self.assertIn("'millholm/forest.yaml'", msg)
-        self.assertIn("deployment_id=1", msg)
+        self.assertIn(f"entity_id={_uid(1)}", msg)
+        self.assertIn("cleanup integrity", msg)
 
     @patch("evennia_world_builder.api._query_object_ids")
-    def test_passes_identity_pair_through_to_query(self, mock_query):
+    def test_passes_entity_id_through_to_query(self, mock_query):
         mock_query.return_value = []
-        wb_lookup_dbref("aethenveil.yaml", 7)
-        mock_query.assert_called_once_with("aethenveil.yaml", 7)
+        wb_lookup_dbref(_uid(7))
+        mock_query.assert_called_once_with(_uid(7))
 
 
 class LookupObjectTest(TestCase):
-    """Verify api.wb_lookup_object resolves the identity pair to a typeclass instance.
+    """Verify api.wb_lookup_object resolves an entity_id to a typeclass instance.
 
     Mocks the internal ``_query_object_ids`` helper (same as
     LookupDbrefTest) plus ``ObjectDB.objects.get`` so the test
@@ -5251,7 +5385,7 @@ class LookupObjectTest(TestCase):
     @patch("evennia_world_builder.api._query_object_ids")
     def test_no_match_returns_none(self, mock_query):
         mock_query.return_value = []
-        self.assertIsNone(wb_lookup_object("millholm/forest.yaml", 1))
+        self.assertIsNone(wb_lookup_object(_uid(1)))
 
     @patch("evennia.objects.models.ObjectDB.objects.get")
     @patch("evennia_world_builder.api._query_object_ids")
@@ -5259,24 +5393,61 @@ class LookupObjectTest(TestCase):
         mock_query.return_value = [42]
         sentinel = MagicMock()
         mock_get.return_value = sentinel
-        self.assertIs(wb_lookup_object("millholm/forest.yaml", 1), sentinel)
+        self.assertIs(wb_lookup_object(_uid(1)), sentinel)
         mock_get.assert_called_once_with(pk=42)
 
     @patch("evennia_world_builder.api._query_object_ids")
     def test_multi_match_raises_api_error(self, mock_query):
         mock_query.return_value = [42, 43]
         with self.assertRaises(ApiError) as ctx:
-            wb_lookup_object("millholm/forest.yaml", 1)
+            wb_lookup_object(_uid(1))
         msg = str(ctx.exception)
         self.assertIn("multiple objects match", msg)
-        self.assertIn("'millholm/forest.yaml'", msg)
-        self.assertIn("deployment_id=1", msg)
+        self.assertIn(f"entity_id={_uid(1)}", msg)
 
     @patch("evennia_world_builder.api._query_object_ids")
-    def test_passes_identity_pair_through_to_query(self, mock_query):
+    def test_passes_entity_id_through_to_query(self, mock_query):
         mock_query.return_value = []
-        wb_lookup_object("aethenveil.yaml", 7)
-        mock_query.assert_called_once_with("aethenveil.yaml", 7)
+        wb_lookup_object(_uid(7))
+        mock_query.assert_called_once_with(_uid(7))
+
+
+class LookupQueryTest(TestCase):
+    """Verify the query itself selects on the tag the Builder writes.
+
+    The pair this API resolves is only useful if it asks for the same
+    category ``Builder._apply_tags`` sets — the previous scheme's
+    categories are no longer written by anything, so a stale query here
+    would return nothing for every object in the world and look like an
+    empty database rather than a mismatch.
+    """
+
+    @patch("evennia.objects.models.ObjectDB.objects")
+    def test_queries_the_entity_id_tag_category(self, mock_objects):
+        from evennia_world_builder.api import _query_object_ids
+
+        mock_objects.filter.return_value.values_list.return_value \
+            .distinct.return_value = []
+        _query_object_ids(_uid(3))
+
+        kwargs = mock_objects.filter.call_args.kwargs
+        self.assertEqual(kwargs["db_tags__db_key__iexact"], _uid(3))
+        self.assertEqual(
+            kwargs["db_tags__db_category__iexact"], "wb_entity_id",
+        )
+
+    @patch("evennia.objects.models.ObjectDB.objects")
+    def test_single_join_not_two(self, mock_objects):
+        # One filter() call, not a chained pair: a globally unique id
+        # needs no second join to disambiguate.
+        from evennia_world_builder.api import _query_object_ids
+
+        chain = mock_objects.filter.return_value
+        chain.values_list.return_value.distinct.return_value = []
+        _query_object_ids(_uid(3))
+
+        self.assertEqual(mock_objects.filter.call_count, 1)
+        chain.filter.assert_not_called()
 
 
 class WBLogTest(TestCase):
@@ -5371,9 +5542,9 @@ class TestPostBuildHook(TestCase):
     the typeclass defaults that Evennia's ``at_object_creation`` sees.
     """
 
-    def _entity(self, *, path="x.yaml", deployment_id=1, attributes=None):
+    def _entity(self, *, path="x.yaml", entity_id=_uid(1), attributes=None):
         content = {
-            "deployment_id": deployment_id,
+            "entity_id": entity_id,
             "name": "X",
             "typeclass": "ev.X",
             "location": None,
@@ -5385,7 +5556,9 @@ class TestPostBuildHook(TestCase):
         )
 
     def _builder(self):
-        return Builder(Definitions(levels=("zone",)))
+        return Builder(
+            Definitions(levels=("zone",)), file_metadata=_file_meta(),
+        )
 
     @patch("evennia.utils.search.search_tag", return_value=[])
     @patch("evennia.utils.create.create_object")
@@ -5441,7 +5614,7 @@ class TestPostBuildHook(TestCase):
 
         self.assertEqual(len(result), 1)
         # The Builder's _apply_* helpers still ran on the spec'd mock.
-        # _apply_tags writes the deployment_file + deployment_id tags
+        # _apply_tags writes the file_id + entity_id tags
         # unconditionally, so tags.add was definitely invoked.
         self.assertTrue(obj.tags.add.called)
 
@@ -5461,8 +5634,8 @@ class TestPostBuildHook(TestCase):
 
         b = self._builder()
         result = b.build([
-            self._entity(path="a.yaml", deployment_id=1),
-            self._entity(path="a.yaml", deployment_id=2),
+            self._entity(path="a.yaml", entity_id=_uid(1)),
+            self._entity(path="a.yaml", entity_id=_uid(2)),
         ])
 
         self.assertEqual(len(result), 2)
@@ -5481,14 +5654,14 @@ class TestPostBuildHook(TestCase):
         mock_create.return_value = obj
 
         b = self._builder()
-        b.build([self._entity(path="rooms/inn.yaml", deployment_id=7)])
+        b.build([self._entity(path="inn.yaml", entity_id=_uid(7))])
 
         # wb_log called once, at ERROR, message mentions hook + path + id + reason.
         self.assertEqual(mock_log.call_count, 1)
         args, kwargs = mock_log.call_args
         msg = args[0]
         self.assertIn("wb_at_post_build", msg)
-        self.assertIn("rooms/inn.yaml", msg)
-        self.assertIn("deployment_id=7", msg)
+        self.assertIn("inn.yaml", msg)
+        self.assertIn(f"entity_id={_uid(7)}", msg)
         self.assertIn("kaboom", msg)
         self.assertEqual(kwargs.get("level"), "ERROR")

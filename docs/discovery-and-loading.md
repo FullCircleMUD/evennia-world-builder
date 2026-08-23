@@ -99,7 +99,7 @@ entities:
   - { ... entity 1 ... }
   - { ... entity 2 ... }
 incoming_exits:                       # ← file-level metadata key
-  - { deployment_file: ..., deployment_id: ... }
+  - <entity_id>
 links:                                # ← file-level metadata key
   - { entity: { ... }, attribute: ..., points_to: { ... } }
 ```
@@ -126,7 +126,7 @@ Indexes are navigation only — never content. The Loader walks indexes; it neve
 For each nested mapping, before emitting the LoadedEntity, the Loader:
 
 1. Records `had_author_location = "location" in mapping` against the *original* YAML.
-2. Synthesises `mapping["location"] = {deployment_file: <parent.path>, deployment_id: <parent.deployment_id>}`, overwriting whatever the author wrote.
+2. Synthesises `mapping["location"] = <parent's entity_id>`, overwriting whatever the author wrote.
 
 This unifies the `location:` shape across top-level and nested entities (both are now either `null` or a cross-ref dict), letting the validator and Builder treat them uniformly. The validator separately refuses author-written `location:` on a nested entity via `had_author_location` so the overwrite is never silent. See [deployment-identity.md](deployment-identity.md#loader-synthesis) for the synthesis rationale and [validator.md](validator.md) for the predicate.
 

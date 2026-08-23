@@ -195,18 +195,19 @@ def _run_validator(
     messages: list, definitions, entities, refusal_label, *,
     resolve_cross_refs: bool,
     file_metadata: dict | None = None,
-) -> bool:
+) -> dict | None:
     """Run a Validator pass over entities. Append every message to ``messages``.
 
-    Returns True on a clean pass, False if the validator refused. Callers
-    should return early on False. wb_build runs inside Evennia, so the
-    validator gets evennia_runtime=True (Tier 3 predicates fire — e.g.
-    typeclass-resolvable). ``resolve_cross_refs`` is True only for the
-    whole-repo pre-validation path; scope-only validation trusts CI for
-    cross-ref resolution and skips Tier 4 (its seen_ids index would be
-    incomplete and produce false-positive misses on cross-file refs).
-    ``file_metadata`` is the per-file metadata dict from Loader.LoadResult,
-    used for file-level checks (incoming_exits shape + Tier 4 resolution).
+    Returns the entity index (``{entity_id: file path}``) on a clean
+    pass, or None if the validator refused — callers should return early
+    on None. The index goes on to the Builder, which needs it to get
+    from a reference back to the YAML that declares its target.
+
+    wb_build runs inside Evennia, so the validator gets
+    evennia_runtime=True (Tier 3 predicates fire — e.g.
+    typeclass-resolvable). ``file_metadata`` is the per-file metadata
+    dict from Loader.LoadResult, used for file-level checks (file_id,
+    incoming_exits shape, and Tier 4 resolution).
 
     Output goes via the ``messages`` list so the caller can flush it to
     ``caller.msg`` from the reactor thread (this helper itself runs in a
@@ -219,7 +220,7 @@ def _run_validator(
         file_metadata=file_metadata,
     )
     try:
-        validator.validate(entities)
+        entity_paths = validator.validate(entities)
     except ValidatorError as e:
         messages.extend(validator.messages)
         messages.append(f"wb_build: refusing to build — {refusal_label}: {e}")
@@ -229,11 +230,11 @@ def _run_validator(
         )
         for finding in validator.messages:
             wb_log(f"  validator: {finding}", level="INFO")
-        return False
+        return None
     # On success: do not flush validator.messages (the success-path
     # messages are diagnostic noise for the operator). Failures still
     # get them above so findings reach the caller.
-    return True
+    return entity_paths
 
 
 class CmdWBBuild(BaseCommand):
@@ -414,11 +415,12 @@ class CmdWBBuild(BaseCommand):
         all_entities = load_result.entities
         file_metadata = load_result.file_metadata
 
-        if not _run_validator(
+        entity_paths = _run_validator(
             messages, definitions, all_entities, "pre-validation failed",
             resolve_cross_refs=True,
             file_metadata=file_metadata,
-        ):
+        )
+        if entity_paths is None:
             return messages
 
         entities = _filter_by_query(all_entities, query)
@@ -432,6 +434,7 @@ class CmdWBBuild(BaseCommand):
             definitions,
             file_metadata=file_metadata,
             reader=reader,
+            entity_paths=entity_paths,
         )
         try:
             created = builder.build(entities)

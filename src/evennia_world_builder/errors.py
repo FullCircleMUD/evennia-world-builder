@@ -63,6 +63,6 @@ class ApiError(Exception):
 
     Used only for conditions that should be impossible if the Builder's
     cleanup-on-rebuild invariant has held — e.g. multiple objects
-    sharing the same ``(deployment_file, deployment_id)`` pair. A
+    carrying the same ``entity_id``. A
     successful no-match returns ``None`` rather than raising.
     """
