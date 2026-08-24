@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evennia-world-builder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Declarative YAML-driven world authoring for Evennia"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
