@@ -2,6 +2,12 @@
 
 Running log of milestones with links to evidence. Reverse chronological — newest first.
 
+## 2026-08-24 — Published to PyPI as `evennia-world-builder` 0.2.0
+
+The `file_id`/`entity_id` identity conversion below, published: https://pypi.org/project/evennia-world-builder/0.2.0/. **Minor version bump, not a patch** — deliberate: existing YAML content written against `0.1.x` fails validation under this version, objects already built into a live database carry tags the new lookup API no longer queries, and `wb_lookup_dbref`/`wb_lookup_object`'s signatures changed. Under pre-1.0 SemVer the minor digit is the breaking-change signal; `1.0.0` is reserved for a deliberate API-stability commitment, which this isn't. README's stale "404 tests green" corrected to 409 (current count as of this release). Built with `python -m build`, verified via `twine check` and a clean-room `pip install` into a fresh venv before upload. Tagged `v0.2.0`.
+
+**Not yet done:** the real `fcm-world` content repo (FCM's production world content) has not been converted to the new identity scheme — this library's own test fixtures were converted, but the actual consumer content was not part of this work. It needs the same `entity_id`/`file_id` conversion before this version can be deployed to the live game.
+
 ## 2026-08-23 — Identity converted to `file_id` + `entity_id`
 
 Every entity now declares a UUID `entity_id`; every entity file declares a UUID `file_id`. References — `location:`, `destination:`, `home:`, `incoming_exits:` entries, and a `links:` entry's `entity` / `points_to` — are a bare scalar naming the target's `entity_id` and nothing else. Neither identifier is derived from a path, which is the whole point: renaming or moving a file no longer orphans its objects, and moving an entity between files no longer requires editing anything that points at it.
