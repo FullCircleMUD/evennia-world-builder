@@ -5,6 +5,11 @@ constrained by, a sibling: it reads world YAML through a pluggable reader, dispa
 pipeline **off the reactor thread**, and creates `ObjectDB` rows — rooms, exits and their contents —
 via `create_object`. It creates no persistent scripts.
 
+## evennia-archive
+
+`[TBD — needs section: evennia-archive was created 2026-08-23 and this entry has not been written.
+See libraries/evennia-archive/docs/interoperability.md for what that library expects.]`
+
 ## evennia-mob-spawner
 
 **No coupling in code.** Neither library imports the other, though both consume `evennia-yaml-reader`
